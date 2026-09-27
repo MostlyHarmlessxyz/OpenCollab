@@ -112,7 +112,7 @@ S2SC_CARDS = CardSet(
 )
 CARD_SETS: dict[str, CardSet] = {
     s.name: s
-    for s in (HANDOFF_CARDS, DUAL_CARDS)
+    for s in (HANDOFF_CARDS, DUAL_CARDS, S2DUAL_CARDS, S2TOOLS_CARDS, S2SC_CARDS)
 }
 
 
