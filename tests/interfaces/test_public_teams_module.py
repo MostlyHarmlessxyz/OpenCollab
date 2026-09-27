@@ -11,7 +11,7 @@ working in a team.
 from __future__ import annotations
 
 from opencollab.domain.scheduler import per_agent_cap
-from opencollab.teams import declared_role_names
+from opencollab.teams import declared_role_names, declared_role_prompt_digests, declared_role_tools
 from tests.support.paths import REPO_ROOT
 
 EXPERIMENT_TEAM = REPO_ROOT / "configs" / "team.handoff.experiment.yaml"
@@ -32,3 +32,44 @@ def test_a_pool_of_n_seats_gives_each_seat_one_solo_agent_s_budget() -> None:
     # pool instead and the seat is worth a third of it.
     assert cap == solo_budget
     assert per_agent_cap(solo_budget, len(roles)) == solo_budget // 3
+
+
+
+
+
+def test_the_bundles_are_keyed_by_the_same_identities_as_the_role_names(tmp_path) -> None:
+    # The reason this reads through ``load_team_config`` instead of the YAML:
+    # role names are normalized on the way in, so a caller that parsed the file
+    # itself would key its bundles on names the run never seats -- and the two
+    # readings would then disagree about which role holds what.
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        "entry: Solo\nroles:\n  Solo:\n    prompt: do the work\n"
+        "    tools: [file_read]\n",
+        encoding="utf-8",
+    )
+
+    bundles = declared_role_tools(str(team_file))
+
+    assert tuple(bundles) == declared_role_names(str(team_file))
+    assert bundles[declared_role_names(str(team_file))[0]] == ("file_read",)
+
+
+def test_the_prompt_digest_is_of_the_card_text_not_of_its_path(tmp_path) -> None:
+    # Why this is a digest of the resolved text: the handoff experiment's
+    # treatment IS the wording of the analyst card, so the grouping key a
+    # metrics row carries has to be the wording. Two cards that differ move
+    # the digest even when the team file names the same path.
+    card = tmp_path / "analyst.md"
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        "entry: analyst\nroles:\n  analyst:\n    prompt_file: analyst.md\n",
+        encoding="utf-8",
+    )
+
+    card.write_text("decide for yourself", encoding="utf-8")
+    first = declared_role_prompt_digests(str(team_file))["analyst"]
+    card.write_text("hand the work over", encoding="utf-8")
+    second = declared_role_prompt_digests(str(team_file))["analyst"]
+
+    assert first != second
