@@ -29,13 +29,17 @@ def test_dotenv_error_identifies_file_and_reason(tmp_path, payload, reason):
 
 
 @pytest.mark.parametrize("command", [[], ["workflow", "run", "duo"]])
+@pytest.mark.parametrize("terminal_width", [80, 240])
+@pytest.mark.parametrize("github_actions", ["", "true"], ids=["local", "github-actions"])
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [(b"KEY=value\n\xff", "encoding error: expected UTF-8"),
      (b"X" * (MAX_DOTENV_BYTES + 1), f"exceeds {MAX_DOTENV_BYTES}-byte limit")],
     ids=["invalid-utf8", "oversized"],
 )
-def test_cli_reports_config_error_without_traceback(tmp_path, command, payload, reason):
+def test_cli_reports_config_error_without_traceback(
+    tmp_path, command, terminal_width, github_actions, payload, reason,
+):
     config = tmp_path / "broken.env"
     config.write_bytes(payload)
     env = dict(os.environ)
@@ -45,15 +49,20 @@ def test_cli_reports_config_error_without_traceback(tmp_path, command, payload, 
         PYTHONPATH=str(PACKAGE_ROOT),
         NO_COLOR="1",
         TERM="dumb",
-        COLUMNS="240",
+        COLUMNS=str(terminal_width),
+        TERMINAL_WIDTH=str(terminal_width),
+        GITHUB_ACTIONS=github_actions,
     )
     result = subprocess.run(
         [sys.executable, "-m", "opencollab", *command, "--workspace", str(tmp_path)],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
     )
     output = unstyle(result.stdout + result.stderr)
+    # Rich may wrap words or paths across panel rows. Compare diagnostic
+    # content independently of whitespace and the panel's vertical borders.
+    diagnostic = "".join(output.replace("\u2502", "").split())
     assert result.returncode == 2, output
-    assert reason in output
-    assert "broken.env" in output
+    assert "".join(reason.split()) in diagnostic, output
+    assert "broken.env" in diagnostic, output
     assert "Traceback" not in output
     assert "KEY=value" not in output
