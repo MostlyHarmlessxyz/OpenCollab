@@ -145,6 +145,7 @@ class ModelCapabilities:
     supports_responses_sampling: bool = True
     supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
+    requires_chat_reasoning_content: bool = False
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -166,6 +167,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek-reasoner": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
     "o1-pro": ModelCapabilities(
         context_window=200_000,
         supports_responses_streaming=False,
