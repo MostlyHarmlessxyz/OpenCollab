@@ -110,7 +110,8 @@ async def test_provider_limit_without_usage_keeps_missing_usage_failure(tmp_path
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_thinking_tool_continuation_replays_reasoning_through_session(tmp_path, stream):
+@pytest.mark.parametrize("thinking", [False, True])
+async def test_thinking_tool_continuation_replays_reasoning_through_session(tmp_path, stream, thinking):
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     call = {"id": "read-1", "type": "function", "function": {
         "name": "file_read", "arguments": '{"path":"f.py"}',
@@ -124,7 +125,7 @@ async def test_thinking_tool_continuation_replays_reasoning_through_session(tmp_
     second = [chunk(delta={"content": "done"}), chunk(finish_reason="stop"), usage_chunk(USAGE)] \
         if stream else completion("done", [], "stop")
     wire = FakeClient([first, second])
-    session = await session_with_wire(tmp_path, wire, stream=stream, tools=[FileReadTool()], thinking=True)
+    session = await session_with_wire(tmp_path, wire, stream=stream, tools=[FileReadTool()], thinking=thinking)
 
     assert await session.run_loop() == "done"
     assert session.phase is SessionPhase.DONE
