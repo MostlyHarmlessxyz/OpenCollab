@@ -729,16 +729,18 @@ async def run_team(
     use_worktrees: bool,
     prebuild_team: bool = False,
     allow_unisolated_shell: bool | None = None,
-    max_steps: int = SESSION_MAX_STEPS,
+    max_steps: int | None = SESSION_MAX_STEPS,
     serialize_turns: bool = False,
     environment: Environment | None = None,
+    record_delivery_tree: bool = False,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
     A forwarder kept so ``programmatic`` stays the one import surface for the
     three regimes; the implementation lives in ``programmatic_team``, whose
     docstring documents ``prebuild_team``, ``allow_unisolated_shell``,
-    ``max_steps``, ``serialize_turns`` and ``environment``.
+    ``max_steps``, ``serialize_turns``, ``environment`` and
+    ``record_delivery_tree``.
     """
     from opencollab.bootstrap.programmatic_team import run_team as _run_team
 
@@ -758,6 +760,7 @@ async def run_team(
         max_steps=max_steps,
         serialize_turns=serialize_turns,
         environment=environment,
+        record_delivery_tree=record_delivery_tree,
     )
 
 
