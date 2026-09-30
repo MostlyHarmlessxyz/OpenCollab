@@ -17,10 +17,12 @@ from ._prompts import _PROMPT_REVISION, SELECTION_PROMPT
     phases=["candidate-a", "candidate-b", "mechanical-selection", "adjudication", "adoption"],
 )
 async def duo(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """Run Duo using task-oriented prompts and paged candidate evidence.
+    """Run Duo using task-oriented prompts and complete candidate evidence.
 
     ``candidate_evidence_dir`` optionally supplies a host-side parent directory.
     Each adjudication creates its own retained evidence directory.
+    ``submission_mode="working_tree"`` declares caller-owned patch capture and
+    later submission. The default ``"task"`` follows task-specific delivery.
     """
     async def adjudicator(context: Any, **options: Any) -> tuple[str, Any, str]:
         return await adjudicate_candidate_files(
