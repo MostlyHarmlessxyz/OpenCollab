@@ -370,6 +370,7 @@ async def run_agent(
         llm_connect_timeout=config.get("llm_connect_timeout", 30.0),
         llm_first_event_timeout=config.get("llm_first_event_timeout", 180.0),
         llm_stream_idle_timeout=config.get("llm_stream_idle_timeout", 180.0),
+        llm_stream_chat=bool(config.get("llm_stream_chat", False)),
         llm_max_retries=config.get("llm_max_retries", 3),
         provider_error_time_budget=config.get("provider_error_time_budget", 0.0),
     )
@@ -431,6 +432,7 @@ async def run_agent(
                 "markup_recovered": internal.markup_recovered,
                 **quiescence,
                 "agent_profile": resolved_profile.name,
+                "agent_tool_names": [tool.name for tool in agent.tools],
             },
         )
     except BaseException as exc:

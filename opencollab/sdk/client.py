@@ -152,6 +152,7 @@ class OpenCollab:
             "llm_connect_timeout",
             "llm_first_event_timeout",
             "llm_stream_idle_timeout",
+            "llm_stream_chat",
             "context_window",
             "llm_max_retries",
             "provider_error_time_budget",

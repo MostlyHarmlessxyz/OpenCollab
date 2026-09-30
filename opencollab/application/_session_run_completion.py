@@ -13,16 +13,19 @@ from opencollab.application._session_run_shared import (
     _WRITE_TOOLS,
     GenerationTimeoutError,
     _ContextOverflowStop,
+    _request_tool_names,
     _submit_tool_choice,
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
-from opencollab.application.ports import CompletionResponse
+from opencollab.application.ports import CompletionResponse, RequestTokenEstimatorPort
 from opencollab.application.shaping import forced_shape
 from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
+    resolve_budget_nudge_mode,
+    resolve_write_nudge_mode,
 )
 from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
@@ -302,18 +305,18 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
-        completed_messages = list(blocked_messages)
+        self._buffer_completed_rows(table, order, blocked_messages)
         observations = ToolProcessingResult()
         terminal_capture_accepted = False
         for tc in tool_calls:
             if terminal_capture_accepted:
-                completed_messages.append(
+                self._buffer_completed_rows(table, order, [
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
                     }
-                )
+                ])
                 continue
             if tc.get("function", {}).get("name") in self.deferrable_tool_names:
                 await self._execute_deferred_tools(table, order, [tc])
@@ -328,13 +331,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             observations.evidence_cards.extend(proc.evidence_cards)
             observations.loop_detections.extend(proc.loop_detections)
             observations.tool_step_attempted |= proc.tool_step_attempted
-            completed_messages.extend(proc.messages_to_append)
+            self._buffer_completed_rows(table, order, proc.messages_to_append)
             terminal_capture_accepted = proc.terminal_capture_accepted
             self._record_submission(proc)
 
         observations.apply_read_write_counter_to(self.state)
         observations.apply_evidence_counter_to(self.state)
-        self._buffer_completed_rows(table, order, completed_messages)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
@@ -403,7 +405,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
             write_landed=self.state.turn.has_landed_write,
+            budget_nudge_mode=resolve_budget_nudge_mode(),
+            write_nudge_mode=resolve_write_nudge_mode(),
+            prev_used_tokens=(
+                self.state.used_tokens
+                if self._steering_prev_used_tokens is None
+                else self._steering_prev_used_tokens
+            ),
         )
+        # Spend at the turn just built, so the next turn can see a band crossing.
+        self._steering_prev_used_tokens = self.state.used_tokens
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
@@ -497,6 +508,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
     ) -> CompletionResponse:
+        # Record-only capture of what this request offers, read back by
+        # ``record_llm_trace`` after the response returns. This is the single
+        # place a request is issued, so it sees the list AFTER the steering hard
+        # rung narrows it and the choice AFTER an override or a degrade to
+        # "auto". Provider-specific conversions happen after this observation;
+        # the trace identifies its application stage.
+        self._last_request_tool_names = _request_tool_names(tools)
+        self._last_request_tool_choice = tool_choice
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
         # exactly as before — the thinking kwargs are omitted entirely so the LLM
@@ -526,7 +545,18 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             remaining_budget = int(self.max_budget_tokens) - int(
                 self.state.used_tokens
             )
-            reserved_input_tokens = estimate_request_tokens(messages, tools)
+            # The provider owns history adaptation, including thinking replay.
+            # Injected clients without that optional capability use the common
+            # estimate with all continuation fields included.
+            if isinstance(self.llm, RequestTokenEstimatorPort):
+                reserved_input_tokens = self.llm.estimate_request_tokens(
+                    messages,
+                    tools,
+                    thinking=getattr(self.agent, "thinking", False),
+                    thinking_params=getattr(self.agent, "thinking_params", None),
+                )
+            else:
+                reserved_input_tokens = estimate_request_tokens(messages, tools)
             output_budget = remaining_budget - reserved_input_tokens
             if output_budget < 1:
                 raise _TokenBudgetStop(

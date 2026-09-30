@@ -160,6 +160,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
         # crossings, re-arming on a write reset. Never persisted.
         self._last_steering_level: str | None = None
+        # Previous steering spend drives threshold crossings. ``None`` makes
+        # the first build compare spend against itself, including after restore.
+        self._steering_prev_used_tokens: int | None = None
         # One ``session_terminal`` row per session, not per turn: ``run_loop``
         # can be re-entered on an already-finished session as a read-only query
         # for its answer, and that must not add a second disposition.
@@ -179,6 +182,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._low_yield_m = low_yield_m
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        # What the application offered before provider request adaptation. Written by
+        # ``_complete_with_choice`` (the one place a request is issued) and read
+        # by ``record_llm_trace``; recording only, never consulted by control
+        # flow.
+        self._last_request_tool_names: list[str] = []
+        self._last_request_tool_choice: Any = None
         self._required_tool_retried = False
         # Message index where the current user turn began. It survives a
         # deferred suspend/resume so the returned answer is scoped to this turn.
@@ -205,6 +214,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._empty_stop_retried = False
         self._submitted_summary = None
         self._last_steering_level = None
+        self._steering_prev_used_tokens = None
         self._turn_start_message_index = None
         self._llm_step_started = False
         self._late_provider_usage = ()
@@ -296,6 +306,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def _prepare_turn(self) -> None:
         """Set the answer cursor and resume the phase appropriate to this call."""
         entry_phase = self.state.phase
+        if not self.state.pending_events.is_empty() and (
+            entry_phase is SessionPhase.IDLE or entry_phase.is_terminal()
+        ):
+            self.state.resume_to_idle()
+            self.state.set_phase(SessionPhase.AWAITING_EVENTS)
+            entry_phase = SessionPhase.AWAITING_EVENTS
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
         if entry_phase is SessionPhase.AWAITING_EVENTS:
@@ -402,6 +418,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         for message in table.ordered_results():
             self.state.append_message(message)
         table.clear()
+        queued_turn = self.state.pending_external_user_turn
+        if queued_turn is not None:
+            self.state.consume_queued_external_user_turn()
+            self._turn_start_message_index = len(self.state.messages)
+            self.state.start_active_turn(self._turn_start_message_index)
+            self._empty_stop_retried = False
+            self._submitted_summary = None
         self.state.transition_to(SessionPhase.AUTOSAVING)
 
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
