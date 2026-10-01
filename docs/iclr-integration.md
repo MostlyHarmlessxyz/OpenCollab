@@ -1,7 +1,7 @@
 # ICLR integration series
 
 The target branch is `integrate/iclr-2027`. It starts at main `7e83256f`.
-The source boundary is ICLR `53506fdb`. Every pull request in this series targets
+The source boundary is ICLR `45fdf22a`. Every pull request in this series targets
 the integration branch and builds on the preceding head.
 
 The final stage also merges main `fe36bed5`, including release 0.8.2,
@@ -28,7 +28,7 @@ history only after every remaining source change has a destination.
 After accepting the complete series, the following check succeeds.
 
 ```sh
-git merge-base --is-ancestor 53506fdb integrate/iclr-2027
+git merge-base --is-ancestor 45fdf22a integrate/iclr-2027
 ```
 
 [Source coverage](iclr-source-coverage.json) records each path changed by ICLR

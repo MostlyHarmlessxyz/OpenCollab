@@ -38,6 +38,8 @@ width — see the module rule below.
 
 ## Commits & pull requests
 
+Commit authorship and `Co-authored-by` trailers are reserved for human contributors.
+
 - **Conventional Commits**, with Chinese descriptions and an English type: `feat` `fix` `refactor` `docs` `test`
   `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: add X`, `fix(tui): handle Y`.
 - **The PR title must itself be a valid Conventional Commit** — merges are squashed, so
