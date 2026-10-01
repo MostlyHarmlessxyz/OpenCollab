@@ -7,6 +7,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-10-01
+
+### Fixed
+
+Loop detection records native execution and edit facts separately from rendered
+tool output. Confirmed edits permit a bounded revalidation of older operations,
+and real timeouts permit one longer retry within the retained call window.
+Unchanged overwrites preserve their physical write behavior while contributing
+no content-change progress. Three unproductive blocked model batches stop a
+session, allowing feedback between batches while retaining per-call blocking.
+Consumed retry permissions and completed prefix results survive session saves.
+
+Candidate subworkflows inherit the budget approved by the parent allocator,
+including remaining-pool caps and concurrent shares. Explicit unbounded mode
+continues to propagate unlimited token and step budgets.
+
+## [0.8.3] - 2026-10-01
+
 ### Fixed
 
 Duo V7 compares each candidate's concrete behavior against public requirements,
@@ -19,6 +37,16 @@ Comparison payloads within 128,000 UTF-8 bytes provide both full diffs, all
 individual and shared public-test records, and reports marked as model-supplied
 inline for a complete structured decision. Larger payloads use complete paged
 evidence reads. Original evidence files are retained in both modes.
+
+File-read loop detection distinguishes pagination ranges while normalizing
+equivalent default arguments. Worktree cleanup remains retryable after a partial
+failure, and command-line configuration errors retain their useful diagnostics.
+Duo working-tree mode delegates final commits and packaging to its caller.
+
+### Changed
+
+The documentation covers the 0.8.x APIs, Base profile, Duo workflow and benchmark
+usage. Distribution builds use Hatchling 1.32.4, and CI uses setup-uv 10.2.0.
 
 ## [0.8.2] - 2026-09-28
 
@@ -253,7 +281,9 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.7.0...v0.8.0
