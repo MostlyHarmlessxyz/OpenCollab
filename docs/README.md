@@ -29,9 +29,15 @@ and the public Git patch parser.
 - The [0.6.0 migration guide](migrations/0.6.0.md) covers public API, team/workflow, evidence, lifecycle, and budget-contract changes (historical)
 - The [0.5.0 migration guide](migrations/0.5.0.md) remains available for historical reference
 
+[The collaborating team](2026-08-31-collab-team.md) documents
+`configs/team.collab.yaml`: what the three-role team is, the three ways to run
+it, and the four conditions that make a run a team's rather than one seat's.
+
 ## Design records
 
 Dated Markdown files in this directory and `archive/` record earlier design
 work. Their branch names, line-number anchors, test counts, and implementation
 status reflect the repository at the time of writing. The package guide,
 current source, and tests define current behavior.
+
+[Offline model and profile inspection](model-inspection.md) describes the public queries used by evaluation and research tooling.

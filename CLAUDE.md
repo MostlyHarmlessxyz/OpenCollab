@@ -30,3 +30,5 @@ uv run opencollab --workspace . # run the built-in Self-Collaboration team; add 
 ```
 
 Conventional commits; `refactor:` commits stay behavior-preserving.
+
+Commit authorship and `Co-authored-by` trailers are reserved for human contributors.

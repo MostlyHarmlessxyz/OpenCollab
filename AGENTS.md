@@ -38,6 +38,8 @@ width — see the module rule below.
 
 ## Commits & pull requests
 
+Commit authorship and `Co-authored-by` trailers are reserved for human contributors.
+
 - **Conventional Commits**, with Chinese descriptions and an English type: `feat` `fix` `refactor` `docs` `test`
   `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: add X`, `fix(tui): handle Y`.
 - **The PR title must itself be a valid Conventional Commit** — merges are squashed, so
@@ -92,3 +94,10 @@ ran.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — full contributor guide and dev setup.
 - [CLAUDE.md](CLAUDE.md) — repo notes for Claude Code.
 - [SECURITY.md](SECURITY.md) — report vulnerabilities privately; never in a public issue.
+
+## ICLR integration branch
+
+Pull requests targeting `integrate/iclr-2027` form the cumulative series in
+`docs/iclr-integration.md`. Merge this series in order with merge commits so
+its final source-history relationship remains available to subsequent Git
+merges. The integration branch starts from the current main implementation.

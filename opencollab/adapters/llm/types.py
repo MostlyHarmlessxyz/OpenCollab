@@ -64,6 +64,12 @@ class LLMResponse:
     # The application stores it without interpreting it, and each provider
     # removes data that does not belong on its request path.
     provider_state: dict[str, Any] | None = None
+    # When the first token of this response arrived, or why nobody could see it
+    # (``adapters.llm.first_token``). Filled by ``LLMClient.complete`` after the
+    # provider returns, so it is set on every arm's path and on none of the
+    # provider modules' own return contracts. ``None`` means the response was
+    # built outside the client (a test double, a replayed fixture).
+    transport_timing: dict[str, Any] | None = None
 
 
 def to_plain_data(value: Any) -> Any:
@@ -139,6 +145,7 @@ class ModelCapabilities:
     supports_responses_sampling: bool = True
     supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
+    requires_chat_reasoning_content: bool = False
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -160,6 +167,18 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek-flash": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-pro": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-reasoner": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
     "o1-pro": ModelCapabilities(
         context_window=200_000,
         supports_responses_streaming=False,
@@ -199,9 +218,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     # The endpoint's model_info payload on 2026-09-21 reported 1,000,000 for
     # context_window, max_input_tokens and reasoning_max_input_tokens. This
-    # entry records that input window; other dimensions retain their defaults.
+    # entry records that input window. Thinking tool continuations also need
+    # the recorded Chat reasoning returned with the assistant tool call.
     "deepseek-v4.1-flash": ModelCapabilities(
         context_window=1_000_000,
+        requires_chat_reasoning_content=True,
     ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
@@ -209,6 +230,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_responses_json_schema=True,
         supports_responses_reasoning=True,
         honors_workflow_thinking_override=False,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-v4-pro": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,

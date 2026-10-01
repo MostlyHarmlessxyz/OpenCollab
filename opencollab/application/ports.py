@@ -444,6 +444,15 @@ class CompletionResponse(Protocol):
         """Provider-confirmed model identity, if the wire protocol reports it."""
         ...
 
+    @property
+    def transport_timing(self) -> dict[str, Any] | None:
+        """When this response's first protocol event arrived, or why it was unmeasured.
+
+        Optional, like ``reasoning``: implementations may omit it and the run
+        loop reads it defensively via ``getattr``.
+        """
+        ...
+
 
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
@@ -462,6 +471,21 @@ class LLMPort(Protocol):
         max_output_tokens: int | None = None,
         response_session_id: str | None = None,
     ) -> CompletionResponse:
+        ...
+
+
+@runtime_checkable
+class RequestTokenEstimatorPort(Protocol):
+    """Optional provider-aware input reservation for adapted request history."""
+
+    def estimate_request_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
         ...
 
 
