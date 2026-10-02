@@ -227,6 +227,43 @@ def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):
     assert cfg["max_output_tokens"] == 32_768
 
 
+@pytest.mark.parametrize("cli_override", [False, True])
+@pytest.mark.xfail(strict=True, reason="P2-01 CLI drops validated runtime fields")
+def test_cli_resolved_config_preserves_complete_runtime_configuration(
+    monkeypatch, tmp_path, cli_override,
+):
+    from opencollab.adapters.cli.config_resolve import resolve_config
+
+    config_file = tmp_path / "runtime.env"
+    config_file.write_text(
+        "\n".join((
+            "OPENCOLLAB_MODEL=file-model",
+            "OPENCOLLAB_API_KEY=fixture-key",
+            "OPENCOLLAB_WIRE_PROTOCOL=responses",
+            "OPENCOLLAB_CONTEXT_WINDOW=64000",
+            "OPENCOLLAB_REASONING_EFFORT=xhigh",
+            "OPENCOLLAB_LLM_MAX_RETRIES=0",
+            "OPENCOLLAB_LLM_CONNECT_TIMEOUT=2",
+            "OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT=3",
+            "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=4",
+            "OPENCOLLAB_LLM_STREAM_CHAT=true",
+            "OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET=5",
+            "",
+        )),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(config_file))
+    model = "cli-model" if cli_override else None
+    budget = 12345 if cli_override else None
+
+    resolved = resolve_config(str(tmp_path), model, None, None, None, budget)
+    expected = build_config(str(tmp_path), overrides={"model": model, "budget": budget})
+
+    assert resolved == expected.model_dump()
+    assert resolved["wire_protocol"] == "responses"
+    assert resolved["llm_max_retries"] == 0
+
+
 def test_dashscope_key_is_not_used_without_dashscope_endpoint(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
     assert build_config().api_key is None
