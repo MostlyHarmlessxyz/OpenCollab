@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 from types import SimpleNamespace
@@ -313,7 +314,6 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
 
 
 @pytest.mark.parametrize("prompt_source", ["prompt", "prompt-file"])
-@pytest.mark.xfail(strict=True, reason="P2-02 one-shot error returns success")
 def test_cli_error_turn_has_nonzero_exit_after_output_and_cleanup(
     monkeypatch, tmp_path, prompt_source,
 ):
@@ -389,6 +389,58 @@ async def test_cli_interactive_error_turn_accepts_a_followup(monkeypatch, tmp_pa
     await cli_main._run(str(tmp_path), config(), None, True, True, False)
 
     assert calls == ["first", "followup", "cleanup"]
+    assert tracer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cli_hold_preserves_inspection_before_error_exit(monkeypatch, tmp_path):
+    events = []
+
+    class Scheduler:
+        used_tokens = 1
+        lead_session = SimpleNamespace(auto_save_path=None, step_count=1)
+
+        def team_roster(self):
+            return []
+
+        async def run_turn(self, aid, line, *, cancel_event=None):
+            raise SchedulerTurnError(aid, SessionPhase.ERROR, "fixture failure", None)
+
+        def agent_step_count(self, aid):
+            return 1
+
+        async def cleanup(self):
+            events.append("cleanup")
+
+    class Prompt:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def attached(self):
+            return contextlib.nullcontext()
+
+        async def ask(self, *args, **kwargs):
+            raise AssertionError("no prompt input needed")
+
+    async def inspect_then_exit(prompt, queue, tui, lead, **kwargs):
+        await queue.drain()
+        events.append("inspect")
+
+    tracer = FakeTracer()
+    install_cli_fakes(monkeypatch, Scheduler(), tracer)
+    monkeypatch.setattr(cli_main, "LivePrompt", Prompt)
+    monkeypatch.setattr(cli_main, "_read_loop", inspect_then_exit)
+    monkeypatch.setattr(cli_main.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli_main.sys.stdout, "isatty", lambda: True, raising=False)
+
+    with pytest.raises(typer.Exit) as error:
+        await cli_main._run(
+            str(tmp_path), config(), None, True, True, False,
+            one_shot_prompt="do work", hold_after_run=True,
+        )
+
+    assert error.value.exit_code == 1
+    assert events == ["inspect", "cleanup"]
     assert tracer.closed is True
 
 
