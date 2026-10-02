@@ -739,3 +739,40 @@ def test_compaction_estimate_still_counts_reasoning_content():
         messages
     )
     assert approx_messages_tokens(messages) > 3 * approx_messages_tokens(stripped)
+
+
+@pytest.mark.parametrize("backend", [
+    "legacy",
+    *[pytest.param(backend, marks=pytest.mark.xfail(
+        strict=True, reason="P2-11 native calls survive snipping",
+    )) for backend in ("anthropic", "responses")],
+])
+def test_old_history_snip_removes_native_calls_with_their_results(backend):
+    leader = _call("old", text="Checking now.")
+    opaque = {"type": "reasoning", "id": "reasoning_1", "encrypted_content": "opaque", "summary": []}
+    if backend == "anthropic":
+        leader["provider_state"] = {"anthropic_content": [
+            {"type": "thinking", "thinking": "Thought", "signature": "opaque"},
+            {"type": "text", "text": "Checking now."},
+            {"type": "tool_use", "id": "old", "name": "bash", "input": {}},
+        ], "opaque": "preserve"}
+    elif backend == "responses":
+        leader["response_items"] = [opaque, {
+            "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "Checking now.", "annotations": []}],
+        }, {"type": "function_call", "id": "fc_1", "call_id": "old", "name": "bash",
+            "arguments": "{}", "status": "completed"}]
+    messages = [_sys(), leader, _tool("old", "x" * 2000), _text("recent")]
+    original = copy.deepcopy(messages)
+    shaped = _snip().shape(messages)
+    assert not any(m.get("role") == "tool" for m in shaped)
+    assistant = next(m for m in shaped if m.get("content") == "Checking now.")
+    assert "tool_calls" not in assistant
+    if backend == "anthropic":
+        blocks = assistant["provider_state"]["anthropic_content"]
+        assert [block["type"] for block in blocks] == ["thinking", "text"]
+        assert assistant["provider_state"]["opaque"] == "preserve"
+    elif backend == "responses":
+        assert [item["type"] for item in assistant["response_items"]] == ["reasoning", "message"]
+        assert assistant["response_items"][0] == opaque
+    assert messages == original
