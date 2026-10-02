@@ -34,12 +34,12 @@
 
 ## 动态
 
-- **2026-09-29**：论文 [*OpenCollab: A Multi-Agent Coding Framework with
-  Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345) 已在 arXiv 公开。
+- **2026-09-29**：论文已在 arXiv 公开：[*OpenCollab: A Multi-Agent Coding Framework with
+  Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345)。
 - **2026-09-27**：[OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
   发布，内置 [Duo](docs/duo/README.zh-CN.md)，默认的 Base agent 改为
   [Single2](docs/single2.md)。
-- 🎉 **祝贺！** OpenCollab 入选 **Seed Program of the Youth Open Source Special Fund** 资助。
+- 🎉 OpenCollab 入选 **Seed Program of the Youth Open Source Special Fund** 资助。
 
 ## 快速开始
 
@@ -109,7 +109,10 @@ Framework with Programmable Collaboration and Controllable Runtime*](https://arx
 
 ```bibtex
 @misc{hsu2026opencollab,
-  author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
+  author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and
+                   Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and
+                   Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and
+                   Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
   title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},
   year          = {2026},
   eprint        = {2609.38345},
@@ -118,13 +121,13 @@ Framework with Programmable Collaboration and Controllable Runtime*](https://arx
 }
 
 @article{dong2023self,
-  author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
-  title        = {Self-Collaboration Code Generation via ChatGPT},
-  journal      = {ACM Transactions on Software Engineering and Methodology},
-  volume       = {33},
-  number       = {7},
-  pages        = {189:1--189:38},
-  year         = {2024}
+  author        = {Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
+  title         = {Self-Collaboration Code Generation via ChatGPT},
+  journal       = {ACM Transactions on Software Engineering and Methodology},
+  volume        = {33},
+  number        = {7},
+  pages         = {189:1--189:38},
+  year          = {2024}
 }
 ```
 

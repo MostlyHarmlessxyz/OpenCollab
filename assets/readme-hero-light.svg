@@ -14,7 +14,6 @@
       <circle cx="161.95" cy="385.44" r="62" fill="#000"/>
       <circle cx="103.83" cy="206.56" r="62" fill="#000"/>
     </mask>
-    <linearGradient id="h" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7C3AED"/><stop offset="1" stop-color="#2563EB"/></linearGradient>
   </defs>
   <g transform="translate(253.99 -2.60) scale(0.168670)">
   <g transform="translate(40 0)">
@@ -29,6 +28,6 @@
   </g>
   <g font-family="Liberation Sans, Arimo, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="32" font-weight="700" text-anchor="middle" letter-spacing="-0.3">
     <text x="440.0" y="123.0" fill="#0F172A">Program how coding agents collaborate.</text>
-    <text x="440.0" y="165.0" fill="url(#h)">Verify that they did.</text>
+    <text x="440.0" y="165.0" fill="#6D28D9">Verify that they did.</text>
   </g>
 </svg>
