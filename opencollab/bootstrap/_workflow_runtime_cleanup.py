@@ -63,10 +63,15 @@ def _inspect_tracer(tracer: TracePort | None) -> tuple[str | None, int, BaseExce
     return write_error, dropped_steps, None
 
 
-def _sticky_tracer_failure(write_error: str | None, dropped_steps: int) -> BaseException | None:
+def _sticky_tracer_failure(
+    write_error: str | None, dropped_steps: int, *, error_number: int | None = None,
+) -> BaseException | None:
     if not write_error:
         return None
-    return OSError(f"trajectory write failed after dropping {dropped_steps} step(s): {write_error}")
+    message = f"trajectory write failed after dropping {dropped_steps} step(s): {write_error}"
+    if isinstance(error_number, int) and not isinstance(error_number, bool):
+        return OSError(error_number, message)
+    return OSError(message)
 
 
 def _positive_cleanup_timeout(value: float) -> float:

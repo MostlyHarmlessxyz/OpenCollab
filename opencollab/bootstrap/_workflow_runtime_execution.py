@@ -170,7 +170,9 @@ async def run_workflow(
     tracer_write_error, tracer_dropped_steps, inspection_failure = _inspect_tracer(tracer)
     tracer_failure = _merge_failure(
         tracer_failure,
-        inspection_failure or _sticky_tracer_failure(tracer_write_error, tracer_dropped_steps),
+        inspection_failure or _sticky_tracer_failure(
+            tracer_write_error, tracer_dropped_steps, error_number=getattr(tracer, "write_error_errno", None),
+        ),
         note_prefix="workflow trace also failed",
     )
 
