@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg?style=flat-square&amp;color=2563EB&amp;labelColor=0F172A" alt="Python 3.10 through 3.14">
   <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RISE-X-Lab/OpenCollab/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0F172A" alt="CI"></a>
   <br>
-  <sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a></sub>
+  <sub><b>English</b> · <a href="README.zh-CN.md">Chinese</a></sub>
 </p>
 
 <p align="center">
