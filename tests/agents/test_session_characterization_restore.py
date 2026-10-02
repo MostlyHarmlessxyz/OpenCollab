@@ -670,3 +670,26 @@ def test_session_store_preserves_messages_only_jsonl_semantics(tmp_path):
     store.save(str(path), messages)
 
     assert store.load_messages(str(path), "fallback") == messages
+
+
+@pytest.mark.xfail(strict=True, reason="P2-13 manual save is shadowed by old journal")
+@pytest.mark.asyncio
+async def test_manual_save_after_default_restore_supersedes_old_journal(tmp_path):
+    path = tmp_path / "manual-save.json"
+    agent = FakeAgent()
+    original = Session(
+        agent=agent, llm=FakeLLMClient([llm_response("first answer")]),
+        auto_save_path=str(path),
+    )
+    await original.add_user_message("first request")
+    await original.run_loop()
+    await original.add_user_message("queued request")
+    await asyncio.gather(*original.pending_cleanup_tasks)
+    journal = tmp_path / "manual-save.json.journal"
+    assert journal.stat().st_size > 0
+    resumed = load_session(str(path), agent=agent, llm=FakeLLMClient([llm_response("second answer")]))
+    assert await resumed.run_loop() == "second answer"
+    resumed.save(str(path))
+    restored = load_session(str(path), agent=agent, llm=FakeLLMClient())
+    assert restored.messages == resumed.messages
+    assert restored.messages[-1]["content"] == "second answer"
