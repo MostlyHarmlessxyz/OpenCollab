@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg?style=flat-square&amp;color=2563EB&amp;labelColor=0F172A" alt="Python 3.10 through 3.14">
   <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RISE-X-Lab/OpenCollab/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0F172A" alt="CI"></a>
   <br>
-  <sub><b>English</b> · <a href="README.zh-CN.md">Chinese</a></sub>
+  <sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a></sub>
 </p>
 
 <p align="center">
@@ -33,13 +33,13 @@
 
 ## News
 
-- **2026-09** — Our paper, *OpenCollab: A Multi-Agent Coding Framework with
-  Programmable Collaboration and Controllable Runtime*, is coming soon.
+- **2026-09-29** — Our paper is on arXiv: [*OpenCollab: A Multi-Agent Coding Framework with
+  Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345).
 - **2026-09-27** — [OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
   ships [Duo](docs/duo.md) built in and makes [Single2](docs/single2.md) the
   default Base agent.
-- 🎉 **Congratulations!** OpenCollab has been selected for support by the
-  **Seed Program of the Youth Open Source Special Fund**.
+- 🎉 OpenCollab has been selected for support by the **Seed Program of the
+  Youth Open Source Special Fund**.
 
 ## Quick start
 
@@ -116,20 +116,32 @@ See [how Adherence is measured](docs/adherence.md).
 
 ## Citation
 
-If you find OpenCollab useful, please give it a ⭐ and cite our work. Our paper,
-*OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and
-Controllable Runtime*, is coming soon. OpenCollab builds on
+If you find OpenCollab useful, please give it a ⭐ and cite our work. Our paper is
+[*OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and
+Controllable Runtime*](https://arxiv.org/abs/2609.38345). OpenCollab builds on
 [Self-Collaboration](https://arxiv.org/abs/2304.07590):
 
 ```bibtex
+@misc{hsu2026opencollab,
+  author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and
+                   Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and
+                   Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and
+                   Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
+  title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},
+  year          = {2026},
+  eprint        = {2609.38345},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2609.38345}
+}
+
 @article{dong2023self,
-  author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
-  title        = {Self-Collaboration Code Generation via ChatGPT},
-  journal      = {ACM Transactions on Software Engineering and Methodology},
-  volume       = {33},
-  number       = {7},
-  pages        = {189:1--189:38},
-  year         = {2024}
+  author        = {Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
+  title         = {Self-Collaboration Code Generation via ChatGPT},
+  journal       = {ACM Transactions on Software Engineering and Methodology},
+  volume        = {33},
+  number        = {7},
+  pages         = {189:1--189:38},
+  year          = {2024}
 }
 ```
 
