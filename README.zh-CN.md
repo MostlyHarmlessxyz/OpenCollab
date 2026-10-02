@@ -12,6 +12,8 @@
 </p>
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2609.38345"><img src="https://img.shields.io/badge/arXiv-2609.38345-B31B1B.svg?style=flat-square&amp;labelColor=0F172A" alt="arXiv 2609.38345"></a>
+  <a href="https://rise-x-lab.github.io/OpenCollab/"><img src="https://img.shields.io/badge/Project-Page-7C3AED.svg?style=flat-square&amp;labelColor=0F172A" alt="项目主页"></a>
   <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/latest"><img src="https://img.shields.io/github/v/release/RISE-X-Lab/OpenCollab?style=flat-square&amp;color=7C3AED&amp;labelColor=0F172A" alt="最新版本"></a>
   <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg?style=flat-square&amp;color=5556EC&amp;labelColor=0F172A" alt="License: MulanPSL-2.0"></a>
   <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg?style=flat-square&amp;color=2563EB&amp;labelColor=0F172A" alt="Python 3.10 至 3.14">
