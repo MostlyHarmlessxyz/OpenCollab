@@ -73,16 +73,27 @@ def _path(value: str | os.PathLike[str] | None, name: str) -> Path | None:
     return Path(parsed).resolve()
 
 
+def _public_agent_failure(item: dict[str, Any]) -> dict[str, Any]:
+    record = {key: item.get(key) for key in (
+        "label", "exception_type", "status_code", "provider_error_type",
+    )}
+    chain = item.get("exception_chain")
+    if isinstance(chain, list):
+        nodes = []
+        for value in chain[:32]:
+            if not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("type", "module")):
+                continue
+            node = {"type": value["type"][:128], "module": value["module"][:256]}
+            node.update({key: value[key] for key in ("errno", "status_code")
+                         if isinstance(value.get(key), int) and not isinstance(value[key], bool)})
+            nodes.append(node)
+        if nodes:
+            record["exception_chain"] = nodes
+    return record
+
+
 def _public_result(result: ProgrammaticResult) -> RunResult[Any]:
-    agent_failures = tuple(
-        {
-            "label": item.get("label"),
-            "exception_type": item.get("exception_type"),
-            "status_code": item.get("status_code"),
-            "provider_error_type": item.get("provider_error_type"),
-        }
-        for item in result.agent_failures
-    )
+    agent_failures = tuple(_public_agent_failure(item) for item in result.agent_failures)
     return RunResult(
         output=result.output,
         status=result.status,

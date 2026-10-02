@@ -36,6 +36,7 @@ from opencollab.adapters.trace import Tracer
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import EnvironmentPort
+from opencollab.bootstrap._workflow_runtime_cleanup import _sticky_tracer_failure
 from opencollab.bootstrap.agent_profiles import SingleAgentProfile, resolve_agent_profile
 from opencollab.bootstrap.agent_runtime import (
     AgentRuntimeLifecycleError,
@@ -292,6 +293,8 @@ def _require_agent_evidence(
         if tracer.write_error is not None:
             raise ProgrammaticLifecycleError(
                 "agent trajectory persistence failed: " + tracer.write_error
+            ) from _sticky_tracer_failure(
+                tracer.write_error, tracer.dropped_steps, error_number=getattr(tracer, "write_error_errno", None),
             )
 
 
@@ -678,7 +681,9 @@ def _close_tracer(tracer: Tracer | None) -> BaseException | None:
     except BaseException as exc:
         return exc
     if tracer.write_error is not None:
-        return OSError("trajectory persistence failed: " + tracer.write_error)
+        return _sticky_tracer_failure(
+            tracer.write_error, tracer.dropped_steps, error_number=getattr(tracer, "write_error_errno", None),
+        )
     return None
 
 

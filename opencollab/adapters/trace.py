@@ -120,6 +120,7 @@ class _TraceWriterState:
     handle: Any
     lock: threading.Lock = field(default_factory=threading.Lock)
     write_error: str | None = None
+    write_error_errno: int | None = None
     dropped_steps: int = 0
     close_error: BaseException | None = None
 
@@ -133,6 +134,8 @@ def _latch_write_error(
     with state.lock:
         if state.write_error is None:
             state.write_error = f"{type(exc).__name__}: {exc}"
+            code = getattr(exc, "errno", None)
+            state.write_error_errno = code if isinstance(code, int) and not isinstance(code, bool) else None
         state.dropped_steps += dropped
 
 
@@ -337,6 +340,11 @@ class Tracer:
     def write_error(self) -> str | None:
         with self._state_lock:
             return self._state.write_error
+
+    @property
+    def write_error_errno(self) -> int | None:
+        with self._state_lock:
+            return self._state.write_error_errno
 
     @property
     def dropped_steps(self) -> int:

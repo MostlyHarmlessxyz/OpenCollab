@@ -25,11 +25,13 @@ Pure application layer: domain + stdlib imports only.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextvars
 import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 
 from opencollab.application.async_timeout import (
@@ -91,6 +93,37 @@ DEFAULT_MAX_CONCURRENCY = 4
 # it can still land a patch — the decisive fix for runs that locate the edit but
 # reach the hard wall before the final write completes.
 DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
+
+
+def _failure_exception_chain(error: BaseException) -> list[dict[str, Any]]:
+    """Retain bounded error identity and codes without provider messages or paths."""
+    pending = [error]
+    seen: set[int] = set()
+    records: list[dict[str, Any]] = []
+    group_type = getattr(builtins, "BaseExceptionGroup", ())
+    while pending and len(records) < 32:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        record: dict[str, Any] = {
+            "type": type(current).__name__[:128],
+            "module": type(current).__module__[:256],
+        }
+        for field in ("errno", "status_code"):
+            value = getattr(current, field, None)
+            if field == "status_code" and (isinstance(value, bool) or not isinstance(value, int)):
+                value = getattr(getattr(current, "response", None), field, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                record[field] = value
+        records.append(record)
+        if isinstance(current, group_type):
+            pending.extend(reversed(current.exceptions[:32]))
+        if current.__context__ is not None and not current.__suppress_context__:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+    return records
 
 
 
@@ -266,7 +299,7 @@ class WorkflowContext(
     @property
     def agent_failures(self) -> tuple[dict[str, Any], ...]:
         """Safe structured summaries for child-agent exceptions."""
-        return tuple(dict(failure) for failure in self._agent_failures)
+        return tuple(deepcopy(failure) for failure in self._agent_failures)
 
     @property
     def trace_failures(self) -> tuple[dict[str, str], ...]:
@@ -373,14 +406,16 @@ class WorkflowContext(
             error_type = None
         elif any(not (char.isalnum() or char in "._-") for char in error_type):
             error_type = None
-        self._agent_failures.append(
-            {
-                "label": str(label or "agent")[:240],
-                "exception_type": type(exc).__name__[:128],
-                "status_code": status_code,
-                "provider_error_type": error_type,
-            }
-        )
+        record = {
+            "label": str(label or "agent")[:240],
+            "exception_type": type(exc).__name__[:128],
+            "status_code": status_code,
+            "provider_error_type": error_type,
+        }
+        chain = _failure_exception_chain(exc)
+        if len(chain) > 1 or any("errno" in item for item in chain):
+            record["exception_chain"] = chain
+        self._agent_failures.append(record)
 
     async def wait_for_pending_cleanup(self) -> None:
         """Wait until every context-owned call and session task is quiescent.

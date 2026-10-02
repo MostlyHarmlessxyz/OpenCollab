@@ -9,6 +9,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+Workflow role failures retain bounded, message-free exception chains, and sticky
+trajectory write failures preserve their original OS error code across the public
+API. Evaluation callers can distinguish storage exhaustion from a failed solver
+without parsing private error messages.
+
 Single2 follows the task's permissions and delivery requirements instead of
 assuming every task is a sealed code-repair evaluation. Task-required
 configuration changes and service delivery coexist with existing-test

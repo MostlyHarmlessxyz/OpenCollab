@@ -127,7 +127,10 @@ omitting it inherits `concurrency`. The two limits are independent, so mixed
 agent and task work may peak at their sum.
 Completed, stopped, and failed workflow results report aggregate session,
 step, token, and markup-recovery metrics. Sanitized child-provider failures are
-available through `RunResult.agent_failures`.
+available through `RunResult.agent_failures`. Nested failures and operating-system
+errors also include a bounded `exception_chain` with exception types, modules,
+integer `errno` values, and HTTP status codes when available. Messages, request
+bodies, and filesystem paths are excluded from this structured evidence.
 
 Use `builtin_tools` to compose tools through the public package.
 
