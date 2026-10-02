@@ -228,7 +228,6 @@ def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("cli_override", [False, True])
-@pytest.mark.xfail(strict=True, reason="P2-01 CLI drops validated runtime fields")
 def test_cli_resolved_config_preserves_complete_runtime_configuration(
     monkeypatch, tmp_path, cli_override,
 ):
