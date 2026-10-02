@@ -204,6 +204,23 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
                 replacement = {
                     key: value for key, value in leader.items() if key != "tool_calls"
                 }
+                replay = leader.get("response_items")
+                if isinstance(replay, list):
+                    replacement["response_items"] = [
+                        item for item in replay
+                        if not isinstance(item, dict) or item.get("type") != "function_call"
+                    ]
+                provider_state = leader.get("provider_state")
+                if isinstance(provider_state, dict):
+                    blocks = provider_state.get("anthropic_content")
+                    if isinstance(blocks, list):
+                        replacement["provider_state"] = {
+                            **provider_state,
+                            "anthropic_content": [
+                                block for block in blocks
+                                if not isinstance(block, dict) or block.get("type") != "tool_use"
+                            ],
+                        }
                 replacements[start] = replacement
                 drop.update(range(start + 1, end))
             else:

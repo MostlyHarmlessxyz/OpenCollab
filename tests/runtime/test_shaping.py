@@ -741,12 +741,7 @@ def test_compaction_estimate_still_counts_reasoning_content():
     assert approx_messages_tokens(messages) > 3 * approx_messages_tokens(stripped)
 
 
-@pytest.mark.parametrize("backend", [
-    "legacy",
-    *[pytest.param(backend, marks=pytest.mark.xfail(
-        strict=True, reason="P2-11 native calls survive snipping",
-    )) for backend in ("anthropic", "responses")],
-])
+@pytest.mark.parametrize("backend", ["legacy", "anthropic", "responses"])
 def test_old_history_snip_removes_native_calls_with_their_results(backend):
     leader = _call("old", text="Checking now.")
     opaque = {"type": "reasoning", "id": "reasoning_1", "encrypted_content": "opaque", "summary": []}
