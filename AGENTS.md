@@ -42,12 +42,13 @@ Commit authorship and `Co-authored-by` trailers are reserved for human contribut
 
 - **Conventional Commits**, with Chinese descriptions and an English type: `feat` `fix` `refactor` `docs` `test`
   `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: add X`, `fix(tui): handle Y`.
-- **The PR title must itself be a valid Conventional Commit** — merges are squashed, so
-  the PR title becomes the commit subject on `main`.
+- **The PR title and merge commit subject must be valid Conventional Commits**,
+  with Chinese descriptions and an English type.
 - **One focused change per PR.** Don't bundle unrelated work.
 - `refactor:` must be behavior-preserving.
-- Feature branches are squash-merged, so keep review churn out of `main` — don't rely on
-  a merge preserving your intermediate commits.
+- Merge pull requests with a merge commit so the feature-branch history and human
+  authorship remain available. Keep commits focused on meaningful implementation,
+  tests, or documentation changes.
 
 ## Hard gates CI will fail your PR on
 
