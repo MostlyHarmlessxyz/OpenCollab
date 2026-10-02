@@ -33,8 +33,8 @@
 
 ## News
 
-- **2026-09** — Our paper, *OpenCollab: A Multi-Agent Coding Framework with
-  Programmable Collaboration and Controllable Runtime*, is coming soon.
+- **2026-09-29** — Our paper, [*OpenCollab: A Multi-Agent Coding Framework with
+  Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345), is on arXiv.
 - **2026-09-27** — [OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
   ships [Duo](docs/duo.md) built in and makes [Single2](docs/single2.md) the
   default Base agent.
@@ -116,12 +116,21 @@ See [how Adherence is measured](docs/adherence.md).
 
 ## Citation
 
-If you find OpenCollab useful, please give it a ⭐ and cite our work. Our paper,
-*OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and
-Controllable Runtime*, is coming soon. OpenCollab builds on
+If you find OpenCollab useful, please give it a ⭐ and cite our work. Our paper is
+[*OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and
+Controllable Runtime*](https://arxiv.org/abs/2609.38345). OpenCollab builds on
 [Self-Collaboration](https://arxiv.org/abs/2304.07590):
 
 ```bibtex
+@misc{hsu2026opencollab,
+  author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
+  title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},
+  year          = {2026},
+  eprint        = {2609.38345},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2609.38345}
+}
+
 @article{dong2023self,
   author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
   title        = {Self-Collaboration Code Generation via ChatGPT},

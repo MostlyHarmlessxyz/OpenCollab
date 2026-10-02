@@ -34,8 +34,8 @@
 
 ## 动态
 
-- **2026-09**：论文 *OpenCollab: A Multi-Agent Coding Framework with
-  Programmable Collaboration and Controllable Runtime* 即将公开。
+- **2026-09-29**：论文 [*OpenCollab: A Multi-Agent Coding Framework with
+  Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345) 已在 arXiv 公开。
 - **2026-09-27**：[OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
   发布，内置 [Duo](docs/duo/README.zh-CN.md)，默认的 Base agent 改为
   [Single2](docs/single2.md)。
@@ -104,10 +104,19 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 
 ## 引用
 
-如果 OpenCollab 对你有帮助，欢迎点一个 ⭐ 并引用我们的工作。论文 *OpenCollab: A Multi-Agent Coding
-Framework with Programmable Collaboration and Controllable Runtime* 即将公开。OpenCollab 建立在 [Self-Collaboration](https://arxiv.org/abs/2304.07590) 之上：
+如果 OpenCollab 对你有帮助，欢迎点一个 ⭐ 并引用我们的工作。论文为 [*OpenCollab: A Multi-Agent Coding
+Framework with Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345)。OpenCollab 建立在 [Self-Collaboration](https://arxiv.org/abs/2304.07590) 之上：
 
 ```bibtex
+@misc{hsu2026opencollab,
+  author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
+  title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},
+  year          = {2026},
+  eprint        = {2609.38345},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2609.38345}
+}
+
 @article{dong2023self,
   author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
   title        = {Self-Collaboration Code Generation via ChatGPT},
