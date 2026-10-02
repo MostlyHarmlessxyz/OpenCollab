@@ -493,7 +493,6 @@ def test_deferred_rejected_synchronously_does_not_suspend():
     assert tool_msgs == [{"role": "tool", "tool_call_id": "s1", "content": "Permission denied: nope"}]
 
 
-@pytest.mark.xfail(strict=True, reason="P2-14 repaired names enter immediate execution")
 @pytest.mark.parametrize("name", ["SPAWN_AGENT", "Spawn_Agent"])
 def test_repaired_deferred_tool_name_keeps_pending_child_ownership(name):
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
