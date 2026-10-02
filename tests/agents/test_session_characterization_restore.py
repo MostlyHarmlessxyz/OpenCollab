@@ -672,7 +672,6 @@ def test_session_store_preserves_messages_only_jsonl_semantics(tmp_path):
     assert store.load_messages(str(path), "fallback") == messages
 
 
-@pytest.mark.xfail(strict=True, reason="P2-13 manual save is shadowed by old journal")
 @pytest.mark.asyncio
 async def test_manual_save_after_default_restore_supersedes_old_journal(tmp_path):
     path = tmp_path / "manual-save.json"

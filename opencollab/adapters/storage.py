@@ -127,7 +127,16 @@ class SessionStore:
     ) -> None:
         self._ensure_parent(path)
         obj = {**(meta or {}), "messages": messages}
-        self._atomic_json_write(path, obj)
+        with _journal_operation_lock(path):
+            records = self._read_journal_records(path)
+            if records:
+                # A full replacement supersedes every durable delta. Publish
+                # its cursor with the base before clearing the sidecar, so a
+                # crash between these writes cannot replay an older state.
+                obj[_AUTOSAVE_SEQUENCE_KEY] = self._newest_persisted_sequence(path) + 1
+            self._atomic_json_write(path, obj)
+            if records:
+                write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)
 
     def save_manifest(self, path: str, manifest: dict[str, Any]) -> None:
         self._ensure_parent(path)
