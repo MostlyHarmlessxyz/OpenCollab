@@ -88,6 +88,10 @@ class SchedulerRunMixin:
         if task is not None and not task.done():
             raise RuntimeError(f"Cannot run user turn for aid {aid}: agent is still running.")
 
+        delivery = self._message_delivery_tasks.get(aid)
+        if delivery is not None and not delivery.done():
+            raise RuntimeError(f"Cannot run user turn for aid {aid}: message delivery is in progress.")
+
         # A durable restore may reopen a prior turn with completed failure rows
         # for children that cannot survive process restart. Finish that turn
         # before appending a new user message, preserving tool-call ordering.

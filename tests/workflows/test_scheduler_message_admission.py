@@ -17,7 +17,6 @@ from tests.support.session_characterization_test_support import (
 )
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D12 active message append owner is ignored")
 @pytest.mark.asyncio
 async def test_external_turn_respects_existing_message_delivery_owner():
     lead = build_session(agent=FakeAgent(), llm=FakeLLMClient([llm_response("unexpected external answer")]))
