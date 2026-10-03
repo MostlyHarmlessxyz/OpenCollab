@@ -9,7 +9,6 @@ from opencollab.adapters.repo_map import build_repo_map, build_repo_map_via_env
 
 
 @pytest.mark.parametrize("via_environment", [False, True])
-@pytest.mark.xfail(strict=True, reason="OC-D11 directory names also exclude regular files")
 def test_generated_directory_rule_keeps_same_named_regular_files(tmp_path, via_environment):
     names = ("build", "dist", "venv", "node_modules", "__pycache__")
     for name in names:
