@@ -42,7 +42,7 @@ from opencollab.bootstrap.agent_profiles import (
     SingleAgentProfile,
     resolve_agent_profile,
 )
-from opencollab.bootstrap.container import build_session_runtime, build_skill_store
+from opencollab.bootstrap.container import agent_trace_view, build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import (
@@ -226,6 +226,9 @@ def build_session(
     to ``application.session.Session``.
     """
     session = Session.__new__(Session)
+    # Bound here, not only inside the runtime: ``Session.__init__`` hands its
+    # own ``tracer`` to the runner and tool executor, replacing theirs.
+    tracer = agent_trace_view(tracer, aid, agent)
     runtime = build_session_runtime(
         agent=agent,
         env=env,
