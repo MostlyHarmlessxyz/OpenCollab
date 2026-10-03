@@ -189,3 +189,64 @@ async def test_base_environment_captures_relative_untracked_candidate_diff(
 
     assert "b/new_file.py" in diff
     assert lease.candidate_workspace not in diff
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D02 candidate factory has no isolation interface")
+@pytest.mark.asyncio
+async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(tmp_path, monkeypatch):
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    built = []
+
+    class ReadingSession(FakeSession):
+        def __init__(self, environment):
+            super().__init__(tokens=3)
+            self.environment = environment
+            self.closes = 0
+
+        async def run_loop(self, cancel_event=None):
+            if self.prompt == "edit candidate":
+                await self.environment.write_file("source.py", "value = 2\n")
+                await self.environment.write_file("untracked.txt", "candidate content\n")
+                return "edited"
+            value = await self.environment.read_file("source.py")
+            extra = await self.environment.read_file("untracked.txt")
+            await self.environment.write_file("source.py", "value = 9\n")
+            return value + extra
+
+        async def aclose(self):
+            self.closes += 1
+
+    def build(**kwargs):
+        session = ReadingSession(kwargs["env"])
+        built.append(session)
+        return session
+
+    monkeypatch.setattr(runtime, "build_session", build)
+    factory = runtime.WorkflowSessionFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None,
+        workspace=str(repo), env=base,
+    )
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+
+    async def nested(child, _args):
+        await child.agent("edit candidate")
+        reply = await child.agent("inspect candidate", isolation=True, label="scout")
+        assert await built[0].environment.read_file("source.py") == "value = 2\n"
+        return reply
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == "value = 2\ncandidate content\n"
+    assert parent.tokens_spent() == 6
+    assert len(parent.sessions) == 2
+    assert built[1].environment.workspace != built[0].environment.workspace
+    assert built[1].closes == 1
+    assert built[0].closes == 0
+    assert base.revoked is False
+    assert (repo / "source.py").read_text() == "value = 1\n"
+    assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+    await factory.release_isolated_envs()
+    assert base.revoked is False
