@@ -216,14 +216,25 @@ class WorkflowSessionFactory:
         return await self._worktree_pool.acquire(label or "workflow-agent")
 
     async def release_isolated_envs(self, *, environment: Any | None = None) -> None:
-        """Release only the requested environment's owned isolation resources."""
+        """Release each owned environment and retain failed leases for retry."""
+        errors: list[Exception] = []
         for owner, lease in tuple(self._candidate_isolation_leases):
             if environment is not None and owner is not environment:
                 continue
-            await lease.cleanup()
-            self._candidate_isolation_leases.remove((owner, lease))
+            try:
+                await lease.cleanup()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._candidate_isolation_leases.remove((owner, lease))
         if environment is None and self._worktree_pool is not None:
-            await self._worktree_pool.release()
+            try:
+                await self._worktree_pool.release()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
+            raise OSError(f"isolated environment cleanup failed: {detail}") from errors[0]
 
     def build_workflow_session(
         self,

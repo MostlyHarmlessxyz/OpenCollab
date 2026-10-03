@@ -312,7 +312,9 @@ class WorkflowSessionFactoryPort(Protocol):
         """Execute one verification tool without creating an LLM session."""
         ...
 
-    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
+    async def acquire_isolated_env(
+        self, *, label: str | None = None, environment: EnvironmentPort | None = None
+    ) -> Any:
         """Hand out a workspace of this agent's own, for ``isolation=True``.
 
         Separate from ``build_workflow_session`` because acquiring one is I/O —

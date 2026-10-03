@@ -271,10 +271,11 @@ async def test_candidate_source_changed_honors_excluded_paths(tmp_path, source_e
     assert "generated_test.py" in candidate.diff
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D02 isolation cleanup aborts candidate finalization")
 @pytest.mark.parametrize("failure_kind", ["close", "cleanup"])
 @pytest.mark.asyncio
-async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resources(tmp_path, monkeypatch, failure_kind):
+async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resources(
+    tmp_path, monkeypatch, failure_kind,
+):
     from opencollab.bootstrap import _workflow_runtime_session as runtime
     from tests.support.workflow_context_test_support import FakeSession
 
@@ -344,7 +345,6 @@ async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resour
     assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D02 forwarding requires new factory keyword")
 @pytest.mark.parametrize("nested_wrapper", [False, True])
 @pytest.mark.asyncio
 async def test_candidate_isolation_accepts_legacy_factory_signature(tmp_path, nested_wrapper):

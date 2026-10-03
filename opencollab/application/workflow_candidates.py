@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -55,45 +56,97 @@ class _CandidateLeaseTreeProbe:
         return await self._lease.diff()
 
 
+def _accepts_environment(method: Any) -> bool:
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "environment" and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+        for parameter in parameters
+    )
+
+
 class _CandidateWorkflowSessionFactory:
     """Bind every child workflow session to one candidate environment."""
 
     def __init__(self, factory: Any, environment: Any) -> None:
         self._factory = factory
         self._environment = environment
-        self._isolated_environments: list[Any] = []
+        self._isolated_environments: list[tuple[Any, Any]] = []
         self._isolated_sessions: list[Any] = []
 
     @property
     def environment_revoked(self) -> bool:
         return bool(getattr(self._environment, "revoked", False))
 
-    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
-        environment = await self._factory.acquire_isolated_env(
-            label=label, environment=self._environment,
-        )
-        self._isolated_environments.append(environment)
-        return environment
+    @property
+    def has_pending_isolated_cleanup(self) -> bool:
+        return bool(self._isolated_environments)
+
+    async def acquire_isolated_env(
+        self, *, label: str | None = None, environment: Any | None = None,
+    ) -> Any:
+        owner = self._environment if environment is None else environment
+        acquire = self._factory.acquire_isolated_env
+        kwargs = {"label": label}
+        if _accepts_environment(acquire):
+            kwargs["environment"] = owner
+        isolated = await acquire(**kwargs)
+        self._isolated_environments.append((owner, isolated))
+        return isolated
 
     def build_workflow_session(self, **kwargs: Any) -> Any:
         environment = kwargs.get("env")
         if environment is None:
             environment = self._environment
         session = self._factory.build_workflow_session(**{**kwargs, "env": environment})
-        if any(environment is owned for owned in self._isolated_environments):
+        if any(
+            owner is self._environment and environment is isolated
+            for owner, isolated in self._isolated_environments
+        ):
             self._isolated_sessions.append(session)
         return session
 
-    async def release_isolated_envs(self) -> None:
-        if not self._isolated_environments:
+    async def release_isolated_envs(self, *, environment: Any | None = None) -> None:
+        owner = self._environment if environment is None else environment
+        if not any(source is owner for source, _isolated in self._isolated_environments):
             return
-        for session in self._isolated_sessions:
+        errors: list[Exception] = []
+        sessions = self._isolated_sessions if owner is self._environment else []
+        for session in sessions:
             close = getattr(session, "aclose", None)
             if callable(close):
-                await close()
-        await self._factory.release_isolated_envs(environment=self._environment)
-        self._isolated_sessions.clear()
-        self._isolated_environments.clear()
+                try:
+                    await close()
+                except Exception as exc:
+                    errors.append(exc)
+        active = any(
+            not task.done()
+            for session in sessions
+            for task in getattr(session, "pending_cleanup_tasks", ())
+            if isinstance(task, asyncio.Future)
+        )
+        if active:
+            errors.append(RuntimeError("isolated session retains active cleanup"))
+        else:
+            release = getattr(self._factory, "release_isolated_envs", None)
+            try:
+                if callable(release):
+                    kwargs = {"environment": owner} if _accepts_environment(release) else {}
+                    await release(**kwargs)
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._isolated_environments = [
+                    pair for pair in self._isolated_environments if pair[0] is not owner
+                ]
+                if owner is self._environment:
+                    self._isolated_sessions.clear()
+        if errors:
+            detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
+            raise RuntimeError(f"candidate isolation cleanup failed: {detail}") from errors[0]
 
     async def execute_verification(
         self,
@@ -102,14 +155,10 @@ class _CandidateWorkflowSessionFactory:
         *,
         environment: Any | None = None,
     ) -> str:
-        del environment
-        if bool(getattr(self._environment, "revoked", False)):
+        resolved = self._environment if environment is None else environment
+        if bool(getattr(resolved, "revoked", False)):
             raise RuntimeError("candidate verification environment is unavailable")
-        return await self._factory.execute_verification(
-            tool,
-            params,
-            environment=self._environment,
-        )
+        return await self._factory.execute_verification(tool, params, environment=resolved)
 
 
 def _verification_evidence(
@@ -278,6 +327,7 @@ class WorkflowCandidatesMixin:
             child = None
             candidate: CandidateRun | None = None
             failure: BaseException | None = None
+            preserve_lease = False
             try:
                 budget_lease = await self._acquire_budget_lease(
                     budget,
@@ -342,32 +392,39 @@ class WorkflowCandidatesMixin:
             except BaseException as exc:
                 failure = exc
             finally:
-                if child is not None:
-                    try:
-                        await child.wait_for_pending_cleanup()
-                        await child.release_isolated_workspaces()
-                    finally:
-                        self._sessions.extend(child.sessions)
-                        for agent_failure in child.agent_failures:
-                            self._agent_failures.append(
-                                {
+                try:
+                    if child is not None:
+                        try:
+                            await child.wait_for_pending_cleanup()
+                            await child.release_isolated_workspaces()
+                        except Exception as exc:
+                            detail = f"{type(exc).__name__}: {exc}"
+                            preserve_lease = bool(getattr(child._factory, "has_pending_isolated_cleanup", False))
+                            if preserve_lease:
+                                detail += f"; candidate worktree retained at {lease.candidate_workspace}"
+                            self._record_agent_failure(f"{label}:cleanup", exc)
+                            if failure is not None:
+                                failure.add_note(detail)
+                            elif candidate is not None:
+                                candidate = replace(candidate, lifecycle_errors=(*candidate.lifecycle_errors, detail))
+                            else:
+                                failure = exc
+                        finally:
+                            self._sessions.extend(child.sessions)
+                            for agent_failure in child.agent_failures:
+                                self._agent_failures.append({
                                     **agent_failure,
-                                    "label": (
-                                        f"{label}/{agent_failure.get('label', 'agent')}"
-                                    )[:240],
-                                }
-                            )
-                if budget_lease is not None:
-                    pending = [
-                        task
-                        for task in budget_lease.pending_tasks or ()
-                        if not task.done()
-                    ]
-                    if pending:
-                        await asyncio.gather(*pending, return_exceptions=True)
-                    self.budget.release(budget_lease)
+                                    "label": f"{label}/{agent_failure.get('label', 'agent')}"[:240],
+                                })
+                    if budget_lease is not None:
+                        pending = [task for task in budget_lease.pending_tasks or () if not task.done()]
+                        if pending:
+                            await asyncio.gather(*pending, return_exceptions=True)
+                finally:
+                    if budget_lease is not None:
+                        self.budget.release(budget_lease)
             if failure is not None:
-                if not isinstance(failure, CandidateCaptureError):
+                if not isinstance(failure, CandidateCaptureError) and not preserve_lease:
                     try:
                         await lease.cleanup()
                     except Exception as cleanup_exc:
@@ -377,6 +434,8 @@ class WorkflowCandidatesMixin:
                         )
                 raise failure
             assert candidate is not None
+            if preserve_lease:
+                return candidate
             try:
                 await lease.cleanup()
             except Exception as exc:
