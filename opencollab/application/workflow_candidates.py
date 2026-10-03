@@ -281,16 +281,6 @@ class WorkflowCandidatesMixin:
                     self._record_agent_failure(label, exc)
                     await self.log(f"candidate workflow failed ({label}): {exc}")
                 await child.wait_for_pending_cleanup()
-                self._sessions.extend(child.sessions)
-                for agent_failure in child.agent_failures:
-                    self._agent_failures.append(
-                        {
-                            **agent_failure,
-                            "label": (
-                                f"{label}/{agent_failure.get('label', 'agent')}"
-                            )[:240],
-                        }
-                    )
                 try:
                     diff = await lease.diff()
                 except Exception as exc:
@@ -327,7 +317,19 @@ class WorkflowCandidatesMixin:
                 failure = exc
             finally:
                 if child is not None:
-                    await child.wait_for_pending_cleanup()
+                    try:
+                        await child.wait_for_pending_cleanup()
+                    finally:
+                        self._sessions.extend(child.sessions)
+                        for agent_failure in child.agent_failures:
+                            self._agent_failures.append(
+                                {
+                                    **agent_failure,
+                                    "label": (
+                                        f"{label}/{agent_failure.get('label', 'agent')}"
+                                    )[:240],
+                                }
+                            )
                 if budget_lease is not None:
                     pending = [
                         task

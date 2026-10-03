@@ -328,7 +328,6 @@ async def test_public_sdk_enforces_finite_and_preserves_unbounded_sessions(
         assert len(outputs) == 3 and not outputs[-1]
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D01 cancelled child sessions disappear from parent")
 async def test_cancelled_candidate_keeps_completed_sessions_and_spend(repository):
     factory = FakeFactory([FakeSession(tokens=20), FakeSession(tokens=30), FakeSession()])
     parent = _context(repository, factory, 100)
@@ -350,4 +349,4 @@ async def test_cancelled_candidate_keeps_completed_sessions_and_spend(repository
     assert len(parent.sessions) == 2
     assert parent.pending_cleanup_tasks == ()
     await parent.agent("later work")
-    assert factory.builds[-1]["budget"] == 70
+    assert factory.builds[-1]["budget"] == 50
