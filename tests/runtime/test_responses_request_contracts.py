@@ -284,7 +284,9 @@ def test_native_gpt5_omits_unsupported_temperature(model, effort):
     assert "temperature" not in kwargs
 
 
-@pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2", "gpt-5.2-2025-12-11"])
+@pytest.mark.parametrize("model", [
+    "gpt-5.1", "gpt-5.2", "gpt-5.2-2025-12-11", "gpt-5.4", "gpt-5.4-2026-03-05",
+])
 @pytest.mark.parametrize("effort", [None, "none", "low", "high", "xhigh"])
 def test_native_gpt5_sampling_follows_effective_reasoning_effort(model, effort):
     kwargs = _build_request_kwargs(
@@ -297,7 +299,10 @@ def test_native_gpt5_sampling_follows_effective_reasoning_effort(model, effort):
         assert "temperature" not in kwargs
 
 
-@pytest.mark.parametrize("model,effort", [("gpt-5", None), ("gpt-5-mini", "high"), ("gpt-5.2", "high")])
+@pytest.mark.parametrize("model,effort", [
+    ("gpt-5", None), ("gpt-5-mini", "high"), ("gpt-5.2", "high"),
+    ("gpt-5.4", "high"), ("gpt-5.4-2026-03-05", "high"),
+])
 def test_native_gpt5_rejects_explicit_unsupported_top_p(model, effort):
     with pytest.raises(ResponsesProtocolError, match="does not support explicit top_p"):
         _build_request_kwargs(
@@ -306,7 +311,7 @@ def test_native_gpt5_rejects_explicit_unsupported_top_p(model, effort):
         )
 
 
-@pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2"])
+@pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2", "gpt-5.4"])
 def test_native_gpt5_none_reasoning_accepts_explicit_top_p(model):
     kwargs = _build_request_kwargs(
         model, [{"role": "user", "content": "work"}], None, 0.2,
@@ -316,7 +321,7 @@ def test_native_gpt5_none_reasoning_accepts_explicit_top_p(model):
     assert kwargs["top_p"] == 0.9
 
 
-@pytest.mark.parametrize("model", ["gpt-5", "gpt-5.2", "vendor/gpt-5-mini"])
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-5.2", "gpt-5.4", "vendor/gpt-5-mini"])
 def test_compatible_responses_provider_retains_its_sampling_parameters(model):
     kwargs = _build_request_kwargs(
         model, [{"role": "user", "content": "work"}], None, 0.2,
