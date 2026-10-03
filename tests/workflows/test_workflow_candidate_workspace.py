@@ -157,20 +157,35 @@ async def test_candidate_workflow_binds_nested_agent_to_candidate(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_source_worktree_leak_is_restored_and_reported(tmp_path: Path) -> None:
+async def test_source_worktree_leak_is_preserved_and_reported(tmp_path: Path, monkeypatch) -> None:
     repo = _repository(tmp_path)
     base = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(base)
+    leases = []
+    acquire = workspace.acquire
+
+    async def recorded_acquire(label):
+        lease = await acquire(label)
+        leases.append(lease)
+        return lease
+
+    monkeypatch.setattr(workspace, "acquire", recorded_acquire)
     ctx = WorkflowContext(
         _Factory(base, ignore_override=True),
         budget_total=None,
-        candidate_workspace=EnvCandidateWorkspace(base),
+        candidate_workspace=workspace,
     )
 
-    with pytest.raises(CandidateWorkspaceTrackingError):
-        await ctx.candidate_agent("leak", label="candidate-a")
-
-    assert (repo / "source.py").read_text() == "value = 1\n"
-    assert _git(repo, "status", "--short") == ""
+    try:
+        with pytest.raises(CandidateWorkspaceTrackingError, match="worktree preserved") as captured:
+            await ctx.candidate_agent("leak", label="candidate-a")
+        assert (repo / "source.py").read_text() == "value = 2\n"
+        assert Path(leases[0].candidate_workspace).is_dir()
+        assert leases[0].base_revision in str(captured.value)
+        assert _git(repo, "show", f"{leases[0].base_revision}:source.py") == "value = 1\n"
+    finally:
+        for lease in leases:
+            await lease.cleanup()
 
 
 @pytest.mark.asyncio
@@ -546,3 +561,140 @@ async def test_candidate_rename_preserves_both_endpoints(tmp_path, names, preser
             assert not (repo / target_name).exists()
     finally:
         await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_dirty_source_enters_candidate_and_only_candidate_increment_is_adopted(tmp_path):
+    repo = _repository(tmp_path)
+    (repo / "source.py").write_text("value = 11\n")
+    _git(repo, "add", "source.py")
+    (repo / "source.py").write_text("value = 12\n")
+    (repo / "draft.txt").write_text("user draft\n")
+    source_index = _git(repo, "diff", "--cached", "--binary")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        assert await lease.environment.read_file("source.py") == "value = 12\n"
+        assert await lease.environment.read_file("draft.txt") == "user draft\n"
+        assert await lease.diff() == ""
+        await lease.environment.write_file("source.py", "value = 13\n")
+        await lease.environment.write_file("draft.txt", "user draft\ncandidate addition\n")
+        candidate_repo = Path(lease.candidate_workspace)
+        _git(candidate_repo, "add", "source.py", "draft.txt")
+        _git(candidate_repo, "-c", "commit.gpgsign=false", "commit", "-m", "candidate edit")
+        await lease.environment.write_file("new.txt", "candidate file\n")
+        patch = await lease.diff()
+        assert "-value = 12" in patch
+        assert "+value = 13" in patch
+        assert "-value = 1\n" not in patch
+        (repo / "notes.txt").write_text("later user draft\n")
+
+        await workspace.adopt(patch)
+
+        assert (repo / "source.py").read_text() == "value = 13\n"
+        assert (repo / "draft.txt").read_text() == "user draft\ncandidate addition\n"
+        assert (repo / "notes.txt").read_text() == "later user draft\n"
+        assert (repo / "new.txt").read_text() == "candidate file\n"
+        assert _git(repo, "diff", "--cached", "--binary") == source_index
+    finally:
+        await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_candidate_adoption_keeps_unrelated_dirty_source_and_preserved_paths(tmp_path):
+    repo = _repository(tmp_path)
+    (repo / "notes.txt").write_text("committed note\n")
+    _git(repo, "add", "notes.txt")
+    _git(repo, "commit", "-m", "notes")
+    (repo / "notes.txt").write_text("user note\n")
+    (repo / "draft.txt").write_text("private draft\n")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        await lease.environment.write_file("source.py", "value = 2\n")
+        await workspace.adopt(await lease.diff(), preserve_paths=["notes.txt", "draft.txt"])
+        assert (repo / "source.py").read_text() == "value = 2\n"
+        assert (repo / "notes.txt").read_text() == "user note\n"
+        assert (repo / "draft.txt").read_text() == "private draft\n"
+    finally:
+        await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_candidate_adoption_conflict_preserves_all_source_files_and_index(tmp_path):
+    repo = _repository(tmp_path)
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        await lease.environment.write_file("source.py", "value = 2\n")
+        await lease.environment.write_file("new.txt", "candidate new file\n")
+        patch = await lease.diff()
+        (repo / "source.py").write_text("value = 99\n")
+        _git(repo, "add", "source.py")
+        (repo / "draft.txt").write_text("keep my draft\n")
+        before = _git(repo, "status", "--porcelain")
+        with pytest.raises(RuntimeError, match="candidate adoption failed"):
+            await workspace.adopt(patch)
+        assert (repo / "source.py").read_text() == "value = 99\n"
+        assert (repo / "draft.txt").read_text() == "keep my draft\n"
+        assert not (repo / "new.txt").exists()
+        assert _git(repo, "status", "--porcelain") == before
+    finally:
+        await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_candidate_adoption_preserves_edit_arriving_during_apply(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        await lease.environment.write_file("source.py", "value = 2\n")
+        patch = await lease.diff()
+        execute = workspace._environment.exec_cmd
+
+        async def edited_before_apply(command, **kwargs):
+            if " apply --binary " in command:
+                (repo / "new-user-note.txt").write_text("concurrent note\n")
+            return await execute(command, **kwargs)
+
+        monkeypatch.setattr(workspace._environment, "exec_cmd", edited_before_apply)
+        await workspace.adopt(patch)
+        assert (repo / "source.py").read_text() == "value = 2\n"
+        assert (repo / "new-user-note.txt").read_text() == "concurrent note\n"
+    finally:
+        await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_candidate_workflow_source_drift_preserves_current_source_and_candidate(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    (repo / "draft.txt").write_text("initial draft\n")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    leases = []
+    acquire = workspace.acquire
+
+    async def recorded_acquire(label):
+        lease = await acquire(label)
+        leases.append(lease)
+        return lease
+
+    monkeypatch.setattr(workspace, "acquire", recorded_acquire)
+    context = WorkflowContext(_Factory(workspace._environment), candidate_workspace=workspace)
+
+    async def workflow(child, _args):
+        await leases[0].environment.write_file("source.py", "value = 2\n")
+        (repo / "draft.txt").write_text("concurrent draft\n")
+        return "done"
+
+    try:
+        with pytest.raises(CandidateWorkspaceTrackingError, match="worktree preserved") as captured:
+            await context.candidate_workflow(workflow, {}, label="candidate")
+        assert (repo / "draft.txt").read_text() == "concurrent draft\n"
+        assert (repo / "source.py").read_text() == "value = 1\n"
+        assert await leases[0].environment.read_file("source.py") == "value = 2\n"
+        assert leases[0].base_revision in str(captured.value)
+        assert _git(repo, "show", f"{leases[0].base_revision}:draft.txt") == "initial draft\n"
+    finally:
+        for lease in leases:
+            await lease.cleanup()
