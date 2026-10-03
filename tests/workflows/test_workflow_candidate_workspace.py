@@ -249,3 +249,25 @@ async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(
     assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
     await factory.release_isolated_envs()
     assert base.revoked is False
+
+
+@pytest.mark.parametrize("source_edit", [
+    pytest.param(False, marks=pytest.mark.xfail(strict=True, reason="OC-D03 exclusions are ignored")), True,
+])
+@pytest.mark.asyncio
+async def test_candidate_source_changed_honors_excluded_paths(tmp_path, source_edit):
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    factory = _Factory(base)
+    parent = WorkflowContext(factory, candidate_workspace=EnvCandidateWorkspace(base))
+
+    async def nested(child, _args):
+        environment = child._factory._environment
+        await environment.write_file("generated_test.py", "test_case = 1\n")
+        if source_edit:
+            await environment.write_file("source.py", "value = 2\n")
+        return {"all": await child.tree_changed(), "source": await child.source_changed(["generated_test.py"])}
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == {"all": True, "source": source_edit}
+    assert "generated_test.py" in candidate.diff
