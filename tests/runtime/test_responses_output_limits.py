@@ -39,7 +39,6 @@ async def test_output_limit_keeps_usage_without_executing_partial_tool(streamed)
     assert not any(message.get("tool_calls") for message in session.messages)
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D05 hidden reasoning exhaustion is retried as empty")
 @pytest.mark.parametrize("encrypted", [None, "opaque encrypted reasoning"])
 @pytest.mark.asyncio
 async def test_hidden_reasoning_output_limit_returns_once_with_reported_usage(encrypted):

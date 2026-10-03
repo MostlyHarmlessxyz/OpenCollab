@@ -562,7 +562,7 @@ def _parse_stream(
         state.output_items.append(synthetic_item)
         content = None
     content = rescue_empty_turn(content, tool_calls, reasoning)
-    if not content and not tool_calls and not interrupted_calls:
+    if not content and not tool_calls and finish_reason != "max_tokens":
         raise ResponsesEmptyOutputError("response.completed contained no message or function call")
     return LLMResponse(
         content=content,
