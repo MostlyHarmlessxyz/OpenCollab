@@ -32,6 +32,7 @@ def main() -> None:
         env = {key: value for key, value in os.environ.items() if not key.startswith("OPENCOLLAB_")}
         env.pop("PYTHONPATH", None)
         env["OPENCOLLAB_WORKFLOWS_DIR"] = str(workflows)
+        env["OPENCOLLAB_API_KEY"] = "offline-unused"  # pragma: allowlist secret
         commands = (
             ("--help",),
             ("workflow", "--help"),

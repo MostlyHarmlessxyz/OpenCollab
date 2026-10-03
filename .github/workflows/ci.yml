@@ -284,6 +284,21 @@ jobs:
           assert expected_names <= listed_names, workflow_list.stdout
           print("Installed package and SDK probes passed.")
           PY
+      - name: Exercise the minimum Typer with Click 8.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifact_root="$RUNNER_TEMP/opencollab-dist"
+          minimum_root="$RUNNER_TEMP/opencollab-minimum-typer"
+          probe_script="$GITHUB_WORKSPACE/tests/support/installed_cli_smoke.py"
+          wheels=("$artifact_root"/wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          uv venv --no-project --python 3.12 "$minimum_root"
+          uv pip install --python "$minimum_root/bin/python" --link-mode copy \
+            "${wheels[0]}" "typer==0.18.0" "click==8.5.0"
+          cd "$RUNNER_TEMP"
+          "$minimum_root/bin/python" "$probe_script"
 
   macos-integrity:
     name: macOS platform integrity
