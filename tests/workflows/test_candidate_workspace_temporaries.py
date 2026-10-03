@@ -69,11 +69,14 @@ async def test_parallel_candidates_ignore_internal_capture_files(monkeypatch, tm
 
 
 @pytest.mark.parametrize("linked_source", [False, True])
+@pytest.mark.parametrize("completion", ["success", "cancel", "write_error"])
 @pytest.mark.parametrize("prefix", [
     ".candidate-source-", ".candidate-capture-index-", ".candidate-capture-paths-",
     ".candidate-adopt-", ".candidate-current-", ".candidate-target-",
 ])
-async def test_internal_candidate_materials_do_not_enter_source_snapshot(monkeypatch, tmp_path, prefix, linked_source):
+async def test_internal_candidate_materials_do_not_enter_source_snapshot(
+    monkeypatch, tmp_path, prefix, linked_source, completion,
+):
     main = _repository(tmp_path)
     repo = main
     if linked_source:
@@ -97,6 +100,8 @@ async def test_internal_candidate_materials_do_not_enter_source_snapshot(monkeyp
         if prefix == selected_prefix:
             created.set()
             await resume.wait()
+            if completion == "write_error":
+                raise OSError("temporary write interrupted")
         return path
 
     selected_prefix = prefix
@@ -122,14 +127,26 @@ async def test_internal_candidate_materials_do_not_enter_source_snapshot(monkeyp
         observed = await workspace.source_diff()
         assert observed == baseline
         assert user_file.name in observed
+        if completion == "cancel":
+            operation.cancel()
     finally:
         resume.set()
-        result = await operation
-        if prefix == ".candidate-source-":
-            await result.cleanup()
+        if completion == "success":
+            result = await operation
+            if prefix == ".candidate-source-":
+                await result.cleanup()
+        elif completion == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+        else:
+            with pytest.raises(OSError, match="temporary write interrupted"):
+                await operation
+        if completion != "success":
+            assert await workspace.source_diff() == baseline
         if lease is not None:
             await lease.cleanup()
         await base.cleanup()
         if linked_source:
             _git(main, "worktree", "remove", "--force", str(repo))
     assert all(not path.exists() for path in temporary_paths)
+    assert all(not path.parent.exists() for path in temporary_paths)

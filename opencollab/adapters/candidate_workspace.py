@@ -7,13 +7,15 @@ import posixpath
 import shlex
 import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.env import DockerWorkspaceEnvironment
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
@@ -37,6 +39,39 @@ def _safe_path(value: str) -> str:
     if posixpath.isabs(normalized) or normalized == ".." or normalized.startswith("../"):
         raise ValueError("candidate preserve path escapes the repository")
     return normalized
+
+
+@asynccontextmanager
+async def _candidate_temporary(
+    environment: Any,
+    workspace: str,
+    content: str,
+    *,
+    prefix: str,
+    suffix: str = ".tmp",
+) -> AsyncIterator[str]:
+    if isinstance(environment, LocalEnvironment):
+        git_directory = _complete(
+            await environment.exec_cmd(
+                f"git -C {shlex.quote(workspace)} rev-parse --absolute-git-dir",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate temporary storage",
+        ).strip()
+        # Git metadata is outside ordinary file snapshots, including linked
+        # worktrees. A private directory also owns any transient Git lock files.
+        with tempfile.TemporaryDirectory(prefix="opencollab-candidate-", dir=git_directory) as directory:
+            owner = LocalEnvironment(directory)
+            try:
+                yield await owner.write_temp_file(content, prefix=prefix, suffix=suffix)
+            finally:
+                await await_owned_operation(owner.cleanup(), propagate_cancellation=True)
+    else:
+        path = await environment.write_temp_file(content, prefix=prefix, suffix=suffix)
+        try:
+            yield path
+        finally:
+            await await_owned_operation(environment.remove_file(path), propagate_cancellation=True)
 
 
 async def _raw_diff(environment: Any, exclude_paths: Sequence[str] = ()) -> str:
@@ -108,11 +143,11 @@ class _CandidateLease:
     cleaned: bool = False
 
     async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
-        index_file = await self.base_environment.write_temp_file(
+        async with _candidate_temporary(
+            self.base_environment, self.source_workspace,
             "", prefix=".candidate-capture-index-",
-        )
-        git = f"GIT_INDEX_FILE={shlex.quote(index_file)} git -C {shlex.quote(self.candidate_workspace)}"
-        try:
+        ) as index_file:
+            git = f"GIT_INDEX_FILE={shlex.quote(index_file)} git -C {shlex.quote(self.candidate_workspace)}"
             # Stage the current contents in an owned temporary index. Candidate
             # commits and index resets leave the same delivered file changes.
             _complete(
@@ -143,11 +178,11 @@ class _CandidateLease:
             # and file/directory replacements follow their actual contents.
             omitted = sorted(set(known.split("\0")).intersection(remaining.split("\0")) - {""})
             if omitted:
-                paths_file = await self.base_environment.write_temp_file(
+                async with _candidate_temporary(
+                    self.base_environment, self.source_workspace,
                     "".join(f":(literal){path}\0" for path in omitted),
                     prefix=".candidate-capture-paths-",
-                )
-                try:
+                ) as paths_file:
                     _complete(
                         await self.base_environment.exec_cmd(
                             f"{git} add --force --pathspec-from-file={shlex.quote(paths_file)} --pathspec-file-nul",
@@ -155,8 +190,6 @@ class _CandidateLease:
                         ),
                         "candidate known files capture",
                     )
-                finally:
-                    await self.base_environment.remove_file(paths_file)
             return await _raw_diff_at(
                 self.base_environment,
                 self.candidate_workspace,
@@ -164,8 +197,6 @@ class _CandidateLease:
                 base_revision=self.base_revision,
                 index_file=index_file,
             )
-        finally:
-            await self.base_environment.remove_file(index_file)
 
     async def cleanup(self) -> None:
         if self.cleaned:
@@ -241,8 +272,10 @@ class EnvCandidateWorkspace:
         )
         try:
             if source_patch.strip():
-                source_file = await self._write_patch(source_patch, ".candidate-source-")
-                try:
+                async with _candidate_temporary(
+                    self._environment, self._workspace, source_patch,
+                    prefix=".candidate-source-", suffix=".patch",
+                ) as source_file:
                     _complete(
                         await self._environment.exec_cmd(
                             f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
@@ -251,8 +284,6 @@ class EnvCandidateWorkspace:
                         ),
                         "candidate source contents",
                     )
-                finally:
-                    await self._environment.remove_file(source_file)
                 # The candidate's index records its starting contents, including
                 # source untracked files, while the source index stays untouched.
                 lease.base_revision = _complete(
@@ -277,13 +308,6 @@ class EnvCandidateWorkspace:
             await lease.cleanup()
             raise
 
-    async def _write_patch(self, content: str, prefix: str) -> str:
-        return await self._environment.write_temp_file(
-            content,
-            prefix=prefix,
-            suffix=".patch",
-        )
-
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:
         return await _raw_diff_at(
             self._environment,
@@ -296,37 +320,37 @@ class EnvCandidateWorkspace:
 
     async def _replace_source_diff(self, patch: str) -> None:
         current = await _raw_diff_at(self._environment, self._workspace)
-        current_file = await self._write_patch(current, ".candidate-current-")
-        target_file = await self._write_patch(patch, ".candidate-target-")
-        reversed_current = False
-        try:
-            if current.strip():
-                await self._apply(
-                    current_file,
-                    "candidate current-source removal",
-                    reverse=True,
-                )
-                reversed_current = True
-            if patch.strip():
-                await self._apply(target_file, "candidate source restoration")
-        except BaseException as failure:
-            if reversed_current:
+        async with _candidate_temporary(
+            self._environment, self._workspace, current,
+            prefix=".candidate-current-", suffix=".patch",
+        ) as current_file:
+            async with _candidate_temporary(
+                self._environment, self._workspace, patch,
+                prefix=".candidate-target-", suffix=".patch",
+            ) as target_file:
+                reversed_current = False
                 try:
-                    await self._apply(
-                        current_file,
-                        "candidate source restoration rollback",
-                    )
-                except BaseException as rollback:
-                    raise RuntimeError(
-                        "candidate source restoration and rollback both failed"
-                    ) from rollback
-            raise failure
-        finally:
-            for path in (current_file, target_file):
-                try:
-                    await self._environment.remove_file(path)
-                except Exception:
-                    pass
+                    if current.strip():
+                        await self._apply(
+                            current_file,
+                            "candidate current-source removal",
+                            reverse=True,
+                        )
+                        reversed_current = True
+                    if patch.strip():
+                        await self._apply(target_file, "candidate source restoration")
+                except BaseException as failure:
+                    if reversed_current:
+                        try:
+                            await self._apply(
+                                current_file,
+                                "candidate source restoration rollback",
+                            )
+                        except BaseException as rollback:
+                            raise RuntimeError(
+                                "candidate source restoration and rollback both failed"
+                            ) from rollback
+                    raise failure
 
     async def _apply(self, path: str, operation: str, *, reverse: bool = False) -> None:
         reverse_flag = " --reverse" if reverse else ""
@@ -359,8 +383,10 @@ class EnvCandidateWorkspace:
         if not isinstance(patch, str) or not patch.strip():
             raise ValueError("candidate patch must be non-empty")
         preserved = tuple(_safe_path(path) for path in preserve_paths)
-        candidate_file = await self._write_patch(patch, ".candidate-adopt-")
-        try:
+        async with _candidate_temporary(
+            self._environment, self._workspace, patch,
+            prefix=".candidate-adopt-", suffix=".patch",
+        ) as candidate_file:
             candidate_paths = await self._patch_paths(candidate_file)
             candidate_paths.update(patch_paths(patch))
             if candidate_paths.intersection(preserved):
@@ -369,11 +395,6 @@ class EnvCandidateWorkspace:
             # files. Independent user edits survive and conflicts leave the
             # source contents and index in place.
             await self._apply(candidate_file, "candidate adoption")
-        finally:
-            try:
-                await self._environment.remove_file(candidate_file)
-            except Exception:
-                pass
 
 
 __all__ = ["EnvCandidateWorkspace"]
