@@ -308,7 +308,8 @@ def responses_sampling_supported(
     dated = r"(?:-\d{4}-\d{2}-\d{2})?"
     if re.fullmatch(rf"gpt-5(?:-mini|-nano)?{dated}", model):
         return False
-    if re.fullmatch(rf"gpt-5\.[12]{dated}", model):
+    # GPT-5.1, GPT-5.2, and GPT-5.4 all document none as their default effort.
+    if re.fullmatch(rf"gpt-5\.(?:1|2|4){dated}", model):
         return reasoning_effort in (None, "none")
     return True
 
