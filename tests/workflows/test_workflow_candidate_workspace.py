@@ -191,7 +191,6 @@ async def test_base_environment_captures_relative_untracked_candidate_diff(
     assert lease.candidate_workspace not in diff
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D02 candidate factory has no isolation interface")
 @pytest.mark.asyncio
 async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(tmp_path, monkeypatch):
     from opencollab.bootstrap import _workflow_runtime_session as runtime

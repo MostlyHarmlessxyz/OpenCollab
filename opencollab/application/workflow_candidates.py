@@ -60,14 +60,39 @@ class _CandidateWorkflowSessionFactory:
     def __init__(self, factory: Any, environment: Any) -> None:
         self._factory = factory
         self._environment = environment
+        self._isolated_environments: list[Any] = []
+        self._isolated_sessions: list[Any] = []
+
+    @property
+    def environment_revoked(self) -> bool:
+        return bool(getattr(self._environment, "revoked", False))
+
+    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
+        environment = await self._factory.acquire_isolated_env(
+            label=label, environment=self._environment,
+        )
+        self._isolated_environments.append(environment)
+        return environment
 
     def build_workflow_session(self, **kwargs: Any) -> Any:
-        return self._factory.build_workflow_session(
-            **{
-                **kwargs,
-                "env": self._environment,
-            }
-        )
+        environment = kwargs.get("env")
+        if environment is None:
+            environment = self._environment
+        session = self._factory.build_workflow_session(**{**kwargs, "env": environment})
+        if any(environment is owned for owned in self._isolated_environments):
+            self._isolated_sessions.append(session)
+        return session
+
+    async def release_isolated_envs(self) -> None:
+        if not self._isolated_environments:
+            return
+        for session in self._isolated_sessions:
+            close = getattr(session, "aclose", None)
+            if callable(close):
+                await close()
+        await self._factory.release_isolated_envs(environment=self._environment)
+        self._isolated_sessions.clear()
+        self._isolated_environments.clear()
 
     async def execute_verification(
         self,
@@ -319,6 +344,7 @@ class WorkflowCandidatesMixin:
                 if child is not None:
                     try:
                         await child.wait_for_pending_cleanup()
+                        await child.release_isolated_workspaces()
                     finally:
                         self._sessions.extend(child.sessions)
                         for agent_failure in child.agent_failures:
