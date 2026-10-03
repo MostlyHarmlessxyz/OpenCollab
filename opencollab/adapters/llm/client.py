@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 import openai
 
@@ -248,6 +249,10 @@ class LLMClient:
                         reasoning_effort=reasoning_effort,
                         prompt_cache_namespace=self._responses_prompt_cache_namespace,
                         response_session_id=response_session_id or uuid.uuid4().hex,
+                        native_openai=(
+                            self.provider == "openai"
+                            and (not self.base_url or urlsplit(self.base_url).hostname == "api.openai.com")
+                        ),
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,
                         round_timeout=self.request_timeout,

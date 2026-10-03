@@ -325,3 +325,40 @@ def test_compatible_responses_provider_retains_its_sampling_parameters(model):
 
     assert kwargs["temperature"] == 0.2
     assert kwargs["top_p"] == 0.9
+
+
+@pytest.mark.parametrize("provider,base_url,native", [
+    ("openai", None, True),
+    ("openai", "https://api.openai.com/v1", True),
+    ("openai", "https://gateway.example.invalid/v1", False),
+    ("custom", None, False),
+])
+async def test_responses_client_applies_native_rules_only_to_native_endpoint(monkeypatch, provider, base_url, native):
+    from opencollab.adapters.llm import client as client_module
+    from tests.support.responses_provider_test_support import completed_response, message_item
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    client = client_module.LLMClient(
+        model="gpt-5", provider=provider, base_url=base_url, wire_protocol="responses",
+        api_key="fixture-key",  # pragma: allowlist secret
+    )
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+        return completed_response(model="gpt-5", output=[message_item("done")])
+
+    actual_complete = client_module.complete_responses
+
+    async def complete_without_stream(*args, **kwargs):
+        return await actual_complete(*args, **kwargs, stream=False)
+
+    monkeypatch.setattr(client._openai.responses, "create", create)
+    monkeypatch.setattr(client_module, "complete_responses", complete_without_stream)
+    try:
+        response = await client.complete([{"role": "user", "content": "work"}], temperature=0.2)
+    finally:
+        await client.aclose()
+
+    assert response.content == "done"
+    assert ("temperature" in requests[0]) is (not native)
