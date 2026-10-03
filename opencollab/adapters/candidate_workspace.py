@@ -164,6 +164,9 @@ class EnvCandidateWorkspace:
             ),
             "candidate base revision",
         ).strip()
+        source_patch = await _raw_diff_at(
+            self._environment, self._workspace, base_revision=base_revision,
+        )
         result = await self._environment.exec_cmd(
             "git -C "
             f"{shlex.quote(self._workspace)} worktree add --detach -- "
@@ -173,13 +176,40 @@ class EnvCandidateWorkspace:
         _complete(result, f"candidate worktree setup for {label}")
         environment = await self._candidate_environment(path)
         await environment.setup()
-        return _CandidateLease(
+        lease = _CandidateLease(
             base_environment=self._environment,
             environment=environment,
             source_workspace=self._workspace,
             candidate_workspace=path,
             base_revision=base_revision,
         )
+        try:
+            if source_patch.strip():
+                source_file = await self._write_patch(source_patch, ".candidate-source-")
+                try:
+                    _complete(
+                        await self._environment.exec_cmd(
+                            f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
+                            f"-- {shlex.quote(source_file)}",
+                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                        ),
+                        "candidate source contents",
+                    )
+                finally:
+                    await self._environment.remove_file(source_file)
+                # The candidate's index records its starting contents, including
+                # source untracked files, while the source index stays untouched.
+                lease.base_revision = _complete(
+                    await self._environment.exec_cmd(
+                        f"git -C {shlex.quote(path)} write-tree",
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    ),
+                    "candidate source tree",
+                ).strip()
+            return lease
+        except BaseException:
+            await lease.cleanup()
+            raise
 
     async def _write_patch(self, content: str, prefix: str) -> str:
         return await self._environment.write_temp_file(
@@ -263,40 +293,21 @@ class EnvCandidateWorkspace:
         if not isinstance(patch, str) or not patch.strip():
             raise ValueError("candidate patch must be non-empty")
         preserved = tuple(_safe_path(path) for path in preserve_paths)
-        original_source = await _raw_diff_at(
-            self._environment,
-            self._workspace,
-            preserved,
-        )
         candidate_file = await self._write_patch(patch, ".candidate-adopt-")
-        original_file = await self._write_patch(original_source, ".candidate-original-")
-        reversed_original = False
         try:
             candidate_paths = await self._patch_paths(candidate_file)
             candidate_paths.update(patch_paths(patch))
             if candidate_paths.intersection(preserved):
                 raise ValueError("candidate patch overlaps a preserved path")
-            if original_source.strip():
-                await self._apply(
-                    original_file,
-                    "candidate original-source removal",
-                    reverse=True,
-                )
-                reversed_original = True
+            # Git applies the candidate increment atomically to the current
+            # files. Independent user edits survive and conflicts leave the
+            # source contents and index in place.
             await self._apply(candidate_file, "candidate adoption")
-        except BaseException as failure:
-            if reversed_original:
-                try:
-                    await self._apply(original_file, "candidate adoption rollback")
-                except BaseException as rollback:
-                    raise RuntimeError("candidate adoption and rollback both failed") from rollback
-            raise failure
         finally:
-            for path in (candidate_file, original_file):
-                try:
-                    await self._environment.remove_file(path)
-                except Exception:
-                    pass
+            try:
+                await self._environment.remove_file(candidate_file)
+            except Exception:
+                pass
 
 
 __all__ = ["EnvCandidateWorkspace"]
