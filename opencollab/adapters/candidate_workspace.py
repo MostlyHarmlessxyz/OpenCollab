@@ -115,7 +115,6 @@ class _CandidateLease:
         try:
             # Stage the current contents in an owned temporary index. Candidate
             # commits and index resets leave the same delivered file changes.
-            # Git retains its existing treatment of ignored untracked files.
             _complete(
                 await self.base_environment.exec_cmd(
                     f"{git} read-tree HEAD && {git} add --all -- .",
@@ -123,6 +122,41 @@ class _CandidateLease:
                 ),
                 "candidate contents capture",
             )
+            original_git = f"git -C {shlex.quote(self.candidate_workspace)}"
+            known = _complete(
+                await self.base_environment.exec_cmd(
+                    f"{original_git} ls-tree -r --name-only -z {shlex.quote(self.base_revision)} "
+                    f"&& {original_git} ls-files --cached -z",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                "candidate known paths",
+            )
+            remaining = _complete(
+                await self.base_environment.exec_cmd(
+                    f"{git} ls-files --others -z",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                "candidate remaining files",
+            )
+            # Retain existing source and staged files when new ignore rules hide
+            # them. The remaining listing supplies current files, so deletions
+            # and file/directory replacements follow their actual contents.
+            omitted = sorted(set(known.split("\0")).intersection(remaining.split("\0")) - {""})
+            if omitted:
+                paths_file = await self.base_environment.write_temp_file(
+                    "".join(f":(literal){path}\0" for path in omitted),
+                    prefix=".candidate-capture-paths-",
+                )
+                try:
+                    _complete(
+                        await self.base_environment.exec_cmd(
+                            f"{git} add --force --pathspec-from-file={shlex.quote(paths_file)} --pathspec-file-nul",
+                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                        ),
+                        "candidate known files capture",
+                    )
+                finally:
+                    await self.base_environment.remove_file(paths_file)
             return await _raw_diff_at(
                 self.base_environment,
                 self.candidate_workspace,

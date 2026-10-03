@@ -163,6 +163,9 @@ Git candidates start with the source's current tracked and non-ignored untracked
 Their delivered patches describe the subsequent candidate edits. Adoption applies
 that increment to the current source files and preserves independent user edits
 and the source index. A conflicting patch leaves the current source in place.
+Changes to ignore rules preserve files copied from the source and files added to
+the candidate index or commits. Newly created ignored files join delivery when
+explicitly added with `git add --force`.
 If the source changes while a candidate is running, the runtime reports the
 change and retains the candidate worktree. The error includes its original Git
 tree, which remains referenced by `refs/worktree/opencollab-source` in the

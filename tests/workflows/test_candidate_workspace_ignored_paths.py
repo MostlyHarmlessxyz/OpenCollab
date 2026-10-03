@@ -91,3 +91,54 @@ async def test_candidate_captures_new_force_added_ignored_file(tmp_path: Path, c
         assert _git(repo, "ls-files", "--stage") == source_index
     finally:
         await lease.cleanup()
+
+
+@pytest.mark.parametrize("original_is_directory", [False, True])
+@pytest.mark.parametrize("restore_original", [False, True])
+@pytest.mark.asyncio
+async def test_candidate_ignored_file_directory_replacement_uses_current_contents(
+    tmp_path: Path, original_is_directory: bool, restore_original: bool,
+) -> None:
+    repo = _repository(tmp_path)
+    original = "entry/leaf.txt" if original_is_directory else "entry"
+    replacement = "entry" if original_is_directory else "entry/leaf.txt"
+    original_path = repo / original
+    original_path.parent.mkdir(parents=True, exist_ok=True)
+    original_path.write_text("initial draft\n")
+    source_index = _git(repo, "ls-files", "--stage")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("ignored-path-replacement")
+    try:
+        candidate_repo = Path(lease.candidate_workspace)
+        candidate_original = candidate_repo / original
+        candidate_replacement = candidate_repo / replacement
+        await lease.environment.write_file(".gitignore", "entry\n")
+        candidate_original.unlink()
+        if original_is_directory:
+            candidate_original.parent.rmdir()
+        candidate_replacement.parent.mkdir(parents=True, exist_ok=True)
+        candidate_replacement.write_text("replacement draft\n")
+        _git(candidate_repo, "add", "--all", "--force", "--", "entry")
+        _git(candidate_repo, "-c", "commit.gpgsign=false", "commit", "-m", "replace ignored path")
+        if restore_original:
+            candidate_replacement.unlink()
+            if not original_is_directory:
+                candidate_replacement.parent.rmdir()
+            candidate_original.parent.mkdir(parents=True, exist_ok=True)
+            candidate_original.write_text("initial draft\n")
+        candidate_index = _git(candidate_repo, "ls-files", "--stage")
+
+        patch = await lease.diff()
+
+        if restore_original:
+            assert "diff --git a/entry" not in patch
+        else:
+            assert "-initial draft" in patch
+            assert "+replacement draft" in patch
+        assert _git(candidate_repo, "ls-files", "--stage") == candidate_index
+        await workspace.adopt(patch, preserve_paths=[original] if restore_original else [])
+        delivered_path = original_path if restore_original else repo / replacement
+        assert delivered_path.read_text() == ("initial draft\n" if restore_original else "replacement draft\n")
+        assert _git(repo, "ls-files", "--stage") == source_index
+    finally:
+        await lease.cleanup()
