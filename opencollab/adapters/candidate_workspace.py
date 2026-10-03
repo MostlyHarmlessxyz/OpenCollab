@@ -52,6 +52,7 @@ async def _raw_diff_at(
     exclude_paths: Sequence[str] = (),
     *,
     base_revision: str = "HEAD",
+    index_file: str | None = None,
 ) -> str:
     excluded = tuple(_safe_path(path) for path in exclude_paths)
     pathspec = ""
@@ -59,10 +60,14 @@ async def _raw_diff_at(
         pathspec = " -- . " + " ".join(
             shlex.quote(f":(exclude){path}") for path in excluded
         )
+    git = f"git -C {shlex.quote(workspace)}"
+    cached = ""
+    if index_file is not None:
+        git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}"
+        cached = " --cached"
     tracked = _complete(
         await environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(workspace)} --no-pager diff {shlex.quote(base_revision)} --binary --no-ext-diff"
+            f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary --no-ext-diff"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -70,8 +75,7 @@ async def _raw_diff_at(
     )
     untracked = _complete(
         await environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(workspace)} ls-files --others --exclude-standard -z"
+            f"{git} ls-files --others --exclude-standard -z"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -104,12 +108,30 @@ class _CandidateLease:
     cleaned: bool = False
 
     async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
-        return await _raw_diff_at(
-            self.base_environment,
-            self.candidate_workspace,
-            exclude_paths,
-            base_revision=self.base_revision,
+        index_file = await self.base_environment.write_temp_file(
+            "", prefix=".candidate-capture-index-",
         )
+        git = f"GIT_INDEX_FILE={shlex.quote(index_file)} git -C {shlex.quote(self.candidate_workspace)}"
+        try:
+            # Stage the current contents in an owned temporary index. Candidate
+            # commits and index resets leave the same delivered file changes.
+            # Git retains its existing treatment of ignored untracked files.
+            _complete(
+                await self.base_environment.exec_cmd(
+                    f"{git} read-tree HEAD && {git} add --all -- .",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                "candidate contents capture",
+            )
+            return await _raw_diff_at(
+                self.base_environment,
+                self.candidate_workspace,
+                exclude_paths,
+                base_revision=self.base_revision,
+                index_file=index_file,
+            )
+        finally:
+            await self.base_environment.remove_file(index_file)
 
     async def cleanup(self) -> None:
         if self.cleaned:

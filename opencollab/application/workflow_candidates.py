@@ -36,7 +36,7 @@ class CandidateCaptureError(RuntimeError):
 
 
 class CandidateWorkspaceTrackingError(RuntimeError):
-    """A candidate execution changed the source worktree before adoption."""
+    """The source worktree changed while a candidate was executing."""
 
 
 class _CandidateLeaseTreeProbe:
@@ -248,8 +248,8 @@ class WorkflowCandidatesMixin:
                 source_after = await self._candidate_workspace.source_diff()
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
-                        f"source worktree changed during candidate {label}; "
-                        f"worktree preserved at {lease.candidate_workspace}; "
+                        f"source worktree changed during candidate {label}. "
+                        f"worktree preserved at {lease.candidate_workspace}. "
                         f"original source tree {getattr(lease, 'base_revision', 'unavailable')}"
                     )
                     raise failure
@@ -366,8 +366,8 @@ class WorkflowCandidatesMixin:
                 source_after = await self._candidate_workspace.source_diff()
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
-                        f"source worktree changed during candidate workflow {label}; "
-                        f"worktree preserved at {lease.candidate_workspace}; "
+                        f"source worktree changed during candidate workflow {label}. "
+                        f"worktree preserved at {lease.candidate_workspace}. "
                         f"original source tree {getattr(lease, 'base_revision', 'unavailable')}"
                     )
                     raise failure
