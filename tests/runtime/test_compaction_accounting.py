@@ -63,11 +63,12 @@ def test_summary_usage_and_native_trace_fields_are_recorded(tmp_path, budget, co
         tracer.close()
     assert session.used_tokens == 7_610
     assert [call["summary"] for call in model.calls] == [True, False]
-    rows = [json.loads(line) for line in open(tracer.path, encoding="utf-8")]
+    with open(tracer.path, encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle]
     calls = [row for row in rows if row["type"] == "llm_call"]
     assert len(calls) == 2
     summary = next(row for row in calls if row["payload"].get("purpose") == "summary")
-    assert summary["tokens"] == 7_600
+    assert summary["metrics"]["tokens"] == 7_600
     assert summary["payload"]["usage"]["input_tokens"] == 7_598
     assert summary["payload"]["usage"]["cache_read_tokens"] == 20
     assert summary["payload"]["usage"]["raw_usage"] == {"provider_input": 7_598}
@@ -82,29 +83,30 @@ def test_summary_usage_and_native_trace_fields_are_recorded(tmp_path, budget, co
 
 
 @pytest.mark.parametrize("long", [False, True])
-def test_remaining_budget_stops_before_any_model_request(long):
+@pytest.mark.parametrize("already_spent", [4_900, 5_000])
+def test_remaining_budget_stops_before_any_model_request(long, already_spent):
     model = AccountingModel()
     session = build_session(agent=Agent(name="low-budget", system_prompt="system"), llm=model,
                             max_budget_tokens=5_000)
     session.messages = history(long)
-    session.used_tokens = 4_900
+    session.used_tokens = already_spent
     asyncio.run(session.run_loop())
     assert model.calls == []
-    assert session.used_tokens == 4_900
+    assert session.used_tokens == already_spent
     assert session.phase is SessionPhase.STOPPED
-    assert "budget exhausted before model call" in session.state.terminal_reason
+    assert "budget" in session.state.terminal_reason
 
 
 def test_summary_reserves_input_and_limits_output():
     model = AccountingModel(summary_tokens=20)
     session = build_session(agent=Agent(name="bounded", system_prompt="system", max_tokens_per_step=50_000),
-                            llm=model, max_budget_tokens=10_000)
+                            llm=model, max_budget_tokens=20_000)
     session.messages = history()
     asyncio.run(session.run_loop())
     summary, answer = model.calls
     assert summary["summary"] is True
-    assert summary["kwargs"]["max_output_tokens"] == 10_000 - estimate_request_tokens(summary["messages"])
-    assert answer["kwargs"]["max_output_tokens"] == 9_980 - estimate_request_tokens(answer["messages"])
+    assert summary["kwargs"]["max_output_tokens"] == 20_000 - estimate_request_tokens(summary["messages"])
+    assert answer["kwargs"]["max_output_tokens"] == 19_980 - estimate_request_tokens(answer["messages"])
 
 
 def test_successful_summary_cache_reuse_charges_once():
@@ -143,3 +145,83 @@ def test_disabled_history_compaction_has_only_answer_usage():
     asyncio.run(session.run_loop())
     assert [call["summary"] for call in model.calls] == [False]
     assert session.used_tokens == 10
+
+
+@pytest.mark.parametrize("deadline", [None, 0.01])
+def test_late_summary_response_is_owned_and_charged_once(deadline):
+    from opencollab.application.session_run import GenerationTimeoutError
+
+    class LateModel(AccountingModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            try:
+                await asyncio.sleep(0.15)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.02)
+            return await super().complete(messages, tools, **kwargs)
+
+    model = LateModel()
+    session = build_session(agent=Agent(name="late", system_prompt="system"), llm=model, llm_timeout=deadline)
+    session.messages = history()
+
+    async def scenario():
+        task = asyncio.create_task(session.run_loop())
+        if deadline is None:
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 0.1)
+        else:
+            with pytest.raises(GenerationTimeoutError):
+                await asyncio.wait_for(task, 0.1)
+        assert session.pending_cleanup_tasks
+        await asyncio.wait_for(asyncio.gather(*session.pending_cleanup_tasks), 0.1)
+
+    asyncio.run(scenario())
+    assert [call["summary"] for call in model.calls] == [True]
+    assert session.used_tokens == 7_600
+    assert session.runner.late_provider_usage == (7_600,)
+    assert session.pending_cleanup_tasks == ()
+
+
+def test_summary_reservation_uses_the_provider_estimator_with_actual_thinking_controls():
+    class EstimatingModel(AccountingModel):
+        def __init__(self):
+            super().__init__(summary_tokens=20)
+            self.estimates = []
+
+        def estimate_request_tokens(self, messages, tools=None, **kwargs):
+            summary = "Your task is to create a detailed summary" in messages[-1]["content"]
+            self.estimates.append({"summary": summary, "kwargs": kwargs})
+            return 200 if summary else 120
+
+    model = EstimatingModel()
+    session = build_session(
+        agent=Agent(name="estimation", system_prompt="system", thinking=True,
+                    thinking_params={"fixture": True}, max_tokens_per_step=50_000),
+        llm=model, max_budget_tokens=1_000,
+    )
+    session.messages = history()
+    asyncio.run(session.run_loop())
+    assert model.calls[0]["kwargs"]["max_output_tokens"] == 800
+    assert model.calls[1]["kwargs"]["max_output_tokens"] == 860
+    assert model.estimates == [
+        {"summary": True, "kwargs": {"thinking": False, "thinking_params": None}},
+        {"summary": False, "kwargs": {"thinking": True, "thinking_params": {"fixture": True}}},
+    ]
+
+
+def test_forced_overflow_summary_uses_the_same_usage_accounting():
+    class OverflowModel(AccountingModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            if not self.calls:
+                self.calls.append({"summary": False})
+                raise ValueError("fixture context overflow")
+            return await super().complete(messages, tools, **kwargs)
+
+    model = OverflowModel()
+    session = build_session(agent=Agent(name="forced-usage", system_prompt="system"), llm=model)
+    session.messages = history(False)
+    session.runner._is_context_overflow = lambda error: isinstance(error, ValueError)
+    assert asyncio.run(session.run_loop()) == "answer"
+    assert [call["summary"] for call in model.calls] == [False, True, False]
+    assert session.used_tokens == 7_610

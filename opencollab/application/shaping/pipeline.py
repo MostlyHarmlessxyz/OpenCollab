@@ -177,7 +177,10 @@ class ShaperPipeline:
 
     async def ashape(self, messages: list[dict[str, Any]], *, force: bool = False) -> list[dict[str, Any]]:
         with _forced_layers(self) if force else nullcontext():
-            result, _reports = await self.ashape_with_report(messages)
+            result = messages
+            for shaper in self._shapers:
+                ashape = getattr(shaper, "ashape", None)
+                result = await ashape(result) if callable(ashape) else shaper.shape(result)
         return result
 
     async def ashape_with_report(
