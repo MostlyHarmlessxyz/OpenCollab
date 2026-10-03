@@ -84,3 +84,18 @@ def test_anthropic_requirement_keeps_the_supported_sampling_api() -> None:
     # still forwards explicit sampling settings through that public method.
     assert "1.0.0" not in requirement.specifier
     assert "1.9.0" not in requirement.specifier
+
+
+def test_typer_requirement_starts_with_click_83_boolean_flag_support() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    declaration = next(
+        line.strip().rstrip(",").strip('"')
+        for line in pyproject.splitlines()
+        if line.strip().startswith('"typer')
+    )
+    requirement = Requirement(declaration)
+    # Typer 0.18.0 restores Click 8.3's missing-value behavior for dual flags.
+    assert "0.12.0" not in requirement.specifier
+    assert "0.17.4" not in requirement.specifier
+    assert "0.18.0" in requirement.specifier
+    assert "0.27.2" in requirement.specifier
