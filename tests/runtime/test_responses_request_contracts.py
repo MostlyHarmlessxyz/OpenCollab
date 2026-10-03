@@ -329,6 +329,7 @@ def test_compatible_responses_provider_retains_its_sampling_parameters(model):
 
 @pytest.mark.parametrize("provider,base_url,environment_url,native", [
     ("openai", None, None, True),
+    (" OpenAI ", None, None, True),
     ("openai", "https://api.openai.com/v1", None, True),
     ("openai", "https://gateway.example.invalid/v1", None, False),
     ("openai", None, "https://gateway.example.invalid/v1", False),

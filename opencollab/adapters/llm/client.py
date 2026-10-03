@@ -20,6 +20,7 @@ from opencollab.adapters.llm.openai_provider import _build_request_kwargs, compl
 from opencollab.adapters.llm.providers import (
     RESPONSES,
     is_anthropic,
+    normalize_provider,
     normalize_wire_protocol,
     warn_provider_near_miss,
 )
@@ -250,7 +251,7 @@ class LLMClient:
                         prompt_cache_namespace=self._responses_prompt_cache_namespace,
                         response_session_id=response_session_id or uuid.uuid4().hex,
                         native_openai=(
-                            self.provider == "openai"
+                            normalize_provider(self.provider) == "openai"
                             and urlsplit(str(self._openai.base_url)).hostname == "api.openai.com"
                         ),
                         first_event_timeout=self.first_event_timeout,
