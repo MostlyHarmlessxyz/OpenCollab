@@ -507,3 +507,40 @@ async def test_candidate_rejects_old_factory_without_releasing_other_owner(tmp_p
     finally:
         await factory.release_isolated_envs()
     assert base.revoked is False
+
+
+@pytest.mark.parametrize("names", [
+    ("source.txt", "target.txt"),
+    ("source file.txt", "target file.txt"),
+    ("source_\u6570\u636e.txt", "target_\u6570\u636e.txt"),
+])
+@pytest.mark.parametrize("preserved_endpoint", [
+    pytest.param("source", marks=pytest.mark.xfail(strict=True, reason="OC-D07 rename source is omitted")),
+    "target", None,
+])
+@pytest.mark.asyncio
+async def test_candidate_rename_preserves_both_endpoints(tmp_path, names, preserved_endpoint):
+    source_name, target_name = names
+    repo = _repository(tmp_path)
+    (repo / source_name).write_text("kept content\n")
+    _git(repo, "add", "--", source_name)
+    _git(repo, "commit", "-m", "rename source")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        candidate_repo = Path(lease.candidate_workspace)
+        _git(candidate_repo, "mv", "--", source_name, target_name)
+        patch = await lease.diff()
+        assert "rename from" in patch
+        if preserved_endpoint is None:
+            await workspace.adopt(patch)
+            assert not (repo / source_name).exists()
+            assert (repo / target_name).read_text() == "kept content\n"
+        else:
+            preserved = source_name if preserved_endpoint == "source" else target_name
+            with pytest.raises(ValueError, match="preserved"):
+                await workspace.adopt(patch, preserve_paths=[preserved])
+            assert (repo / source_name).read_text() == "kept content\n"
+            assert not (repo / target_name).exists()
+    finally:
+        await lease.cleanup()
