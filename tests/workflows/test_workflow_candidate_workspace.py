@@ -191,8 +191,9 @@ async def test_base_environment_captures_relative_untracked_candidate_diff(
     assert lease.candidate_workspace not in diff
 
 
+@pytest.mark.parametrize("nested_wrapper", [False, True])
 @pytest.mark.asyncio
-async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(tmp_path, monkeypatch):
+async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(tmp_path, monkeypatch, nested_wrapper):
     from opencollab.bootstrap import _workflow_runtime_session as runtime
     from tests.support.workflow_context_test_support import FakeSession
 
@@ -229,6 +230,10 @@ async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(
         model="gpt-fake", provider="openai", api_key=None, base_url=None,
         workspace=str(repo), env=base,
     )
+    if nested_wrapper:
+        from opencollab.application.workflow_candidates import _CandidateWorkflowSessionFactory
+
+        factory = _CandidateWorkflowSessionFactory(factory, base)
     parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
 
     async def nested(child, _args):
