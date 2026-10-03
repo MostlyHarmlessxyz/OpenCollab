@@ -66,7 +66,7 @@ function openBlueprint(t, yaml) {
         "print(json.dumps({'roles': {name: role.model_dump() for name, role in team.roles.items()},",
         "'context': {'name': team.context.name, 'budget': team.context.tool_result_budget},",
         "'entry': team.entry, 'topology': {name: sorted(edges) for name, edges in team.topology.edges.items()},",
-        "'tool_limits': team.tool_limits}))",
+        "'tool_limits': team.tool_limits, 'role_budgets': team.role_budgets}))",
       ].join("\n"), yamlPath], { env: { ...process.env, PYTHONPATH: repo }, encoding: "utf8" }));
     },
     saveExport() {
