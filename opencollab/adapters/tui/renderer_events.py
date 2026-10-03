@@ -343,6 +343,7 @@ class _RendererEventsMixin:
         if not target.current_text:
             return
         block = self._assistant_block(Markdown(target.current_text))
+        target.turn_has_text = True
         target.current_text = ""
         self._append_history_block(target, block)
         self._drain_pending(self._aid_of(target))
