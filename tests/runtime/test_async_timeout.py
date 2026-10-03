@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import os
 import subprocess
 import sys
@@ -208,7 +207,6 @@ def test_bounded_shutdown_cancels_task_spawned_during_cleanup():
             # task until shutdown can observe and cancel it on the next scan.
             owners.append(asyncio.create_task(child()))
             await child_started.wait()
-            gc.collect()
 
     async def main():
         owners.append(asyncio.create_task(parent()))
