@@ -289,7 +289,7 @@ class ToolExecutionRuntimeMixin:
                     result = timeout_result
                 else:
                     details = [
-                        "Tool cancellation cleanup failed to meet its bounded deadline",
+                        "Tool cancellation cleanup failed",
                         "the execution environment was revoked before returning",
                     ]
                     if revoke_error:
@@ -328,11 +328,21 @@ class ToolExecutionRuntimeMixin:
 
     async def _cleanup_timed_out_execution(self, task: asyncio.Task[Any]) -> tuple[bool, str | None, str | None]:
         task.cancel()
+        cleanup_error = None
         if await self._wait_task(task, self._cancellation_cleanup_timeout):
-            return True, None, None
-        self._track_pending_cleanup(task)
+            # A normal cancellation terminates the coroutine with CancelledError.
+            # An exception raised by its cleanup instead is not proof that its
+            # environment stopped. Preserve that failure and abort the environment.
+            if not task.cancelled():
+                cleanup_error = self._task_failure(task, label="tool cancellation cleanup")
+            if cleanup_error is None:
+                return True, None, None
+        else:
+            self._track_pending_cleanup(task)
         revoke_error = self._revoke_environment()
         abort_error = await self._abort_environment_bounded()
+        if cleanup_error:
+            abort_error = "; ".join(detail for detail in (cleanup_error, abort_error) if detail)
         return False, revoke_error, abort_error
 
     async def _await_owned_cleanup_despite_cancellation(self, cleanup_task: asyncio.Task[Any]) -> None:
