@@ -43,9 +43,12 @@ def test_returned_summary_usage_survives_cancellation_during_owned_client_close(
 
     async def scenario():
         owner = asyncio.create_task(session.run_loop())
-        try:
+        async def wait_for_summary_client():
             while len(clients) < 2:
                 await asyncio.sleep(0)
+
+        try:
+            await asyncio.wait_for(wait_for_summary_client(), 0.2)
             await asyncio.wait_for(clients[1].started_close.wait(), 0.2)
             assert session.used_tokens == 7_600
             if deadline is None:
@@ -57,7 +60,7 @@ def test_returned_summary_usage_survives_cancellation_during_owned_client_close(
                     await asyncio.wait_for(owner, 0.2)
         finally:
             owner.cancel()
-            await asyncio.gather(owner, return_exceptions=True)
+            await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), 0.2)
             await asyncio.wait_for(asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True), 0.2)
             await session.aclose()
 
@@ -89,7 +92,11 @@ def test_returned_summary_usage_survives_owned_client_close_failure(monkeypatch)
     monkeypatch.setattr(container, "LLMClient", FailingCloseModel)
     session = build_session(agent=Agent(name="failed-close", system_prompt="system"))
     session.messages = history()
-    assert asyncio.run(session.run_loop()) == "answer"
+    async def scenario():
+        assert await asyncio.wait_for(session.run_loop(), 0.2) == "answer"
+        await session.aclose()
+
+    asyncio.run(scenario())
     assert session.used_tokens == 7_610
     assert len(clients[1].calls) == 1
     assert session.pending_cleanup_tasks == ()

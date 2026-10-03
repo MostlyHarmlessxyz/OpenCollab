@@ -634,22 +634,23 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 "response_session_id": self._response_session_id,
             })
 
-        async def complete_and_account() -> CompletionResponse:
+        def account_response(response: CompletionResponse) -> None:
+            input_tokens, total_tokens = _normalize_completion_usage(response.usage)
+            self.state.add_used_tokens(total_tokens)
+            self._mark_budget_reserve_consumed(protected_call=protected_call)
+            self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
+            self.state.set_context_tokens(input_tokens)
+            if abandoned:
+                self._late_provider_usage += (total_tokens,)
+            self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
+
+        async def complete_owned() -> CompletionResponse:
             try:
-                response = await complete(messages, **kwargs)
-                input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-                self.state.add_used_tokens(total_tokens)
-                self._mark_budget_reserve_consumed(protected_call=protected_call)
-                self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
-                self.state.set_context_tokens(input_tokens)
-                if abandoned:
-                    self._late_provider_usage += (total_tokens,)
-                self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
-                return response
+                return await complete(messages, on_response=account_response, **kwargs)
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
 
-        owner = asyncio.create_task(complete_and_account())
+        owner = asyncio.create_task(complete_owned())
         self._track_provider_task(owner)
         try:
             if self._per_call_timeout is None:

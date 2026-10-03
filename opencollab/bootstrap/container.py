@@ -163,16 +163,23 @@ def _build_summarizer(
     )
     if llm is not None:
 
-        async def _summary_complete(request: list[dict[str, Any]], **kwargs: Any) -> Any:
-            return await resolved_llm.complete(
+        async def _summary_complete(
+            request: list[dict[str, Any]], *, on_response: Callable[[Any], None] | None = None, **kwargs: Any
+        ) -> Any:
+            response = await resolved_llm.complete(
                 request,
                 temperature=0.0,
                 **summary_extra,
                 **kwargs,
             )
+            if on_response is not None:
+                on_response(response)
+            return response
     else:
 
-        async def _summary_complete(request: list[dict[str, Any]], **kwargs: Any) -> Any:
+        async def _summary_complete(
+            request: list[dict[str, Any]], *, on_response: Callable[[Any], None] | None = None, **kwargs: Any
+        ) -> Any:
             client = LLMClient(
                 model=agent.model,
                 api_key=agent.api_key,
@@ -191,12 +198,15 @@ def _build_summarizer(
             )
             primary_failure: BaseException | None = None
             try:
-                return await client.complete(
+                response = await client.complete(
                     request,
                     temperature=0.0,
                     **summary_extra,
                     **kwargs,
                 )
+                if on_response is not None:
+                    on_response(response)
+                return response
             except BaseException as exc:
                 primary_failure = exc
                 raise
