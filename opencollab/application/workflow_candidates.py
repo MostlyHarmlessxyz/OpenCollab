@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.exception_notes import add_exception_note
 
 
 def _candidate_budget_total(budget: int | None) -> int | None:
@@ -284,7 +285,8 @@ class WorkflowCandidatesMixin:
                     try:
                         await lease.cleanup()
                     except Exception as cleanup_exc:
-                        failure.add_note(
+                        add_exception_note(
+                            failure,
                             "candidate cleanup after failure also failed: "
                             f"{type(cleanup_exc).__name__}: {cleanup_exc}"
                         )
@@ -404,7 +406,7 @@ class WorkflowCandidatesMixin:
                                 detail += f"; candidate worktree retained at {lease.candidate_workspace}"
                             self._record_agent_failure(f"{label}:cleanup", exc)
                             if failure is not None:
-                                failure.add_note(detail)
+                                add_exception_note(failure, detail)
                             elif candidate is not None:
                                 candidate = replace(candidate, lifecycle_errors=(*candidate.lifecycle_errors, detail))
                             else:
@@ -428,7 +430,8 @@ class WorkflowCandidatesMixin:
                     try:
                         await lease.cleanup()
                     except Exception as cleanup_exc:
-                        failure.add_note(
+                        add_exception_note(
+                            failure,
                             "candidate cleanup after failure also failed: "
                             f"{type(cleanup_exc).__name__}: {cleanup_exc}"
                         )

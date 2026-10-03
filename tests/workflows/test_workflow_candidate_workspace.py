@@ -414,7 +414,6 @@ async def test_candidate_adoption_preserves_git_quoted_file_paths(tmp_path, name
         await lease.cleanup()
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D02 cleanup calls unavailable exception add_note")
 @pytest.mark.asyncio
 async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_path):
     import asyncio
