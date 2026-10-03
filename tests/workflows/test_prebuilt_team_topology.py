@@ -432,6 +432,8 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
         await scheduler.cleanup()
 
     (payload,) = _payloads(tracer.path, "assigned.topology_nodes")
+    per_agent_cap = scheduler._per_agent_cap()
+    assert payload["budget_source"] == "shared_rule"
     assert payload["entry_role"] == "analyst"
     assert payload["declared_roles"] == ["analyst", "coder", "tester"]
     assert payload["nodes"] == [
@@ -439,6 +441,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "aid": 0,
             "role": "analyst",
             "entry": True,
+            "model": CONFIG["model"],
             # Headless, so the analyst's ask_user is dropped by the registry.
             # ``message_agent`` is the one addition ``_prebuildable_default``
             # makes: without it the Analyst's two edges are unwalkable and the
@@ -459,11 +462,13 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # "carries bash and would be refused", which is what the Coder and
             # Tester record here.
             "shell": "absent",
+            "token_allowance": per_agent_cap,
         },
         {
             "aid": 1,
             "role": "coder",
             "entry": False,
+            "model": CONFIG["model"],
             "tools": sorted(CODER_TOOL_NAMES),
             "permission_mode": "auto",
             "workspace": workspaces[1],
@@ -473,17 +478,20 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # not one. The peers record the same answer agent 0 would: the
             # switch is run-wide, not per-agent.
             "shell": "sandbox_required",
+            "token_allowance": per_agent_cap,
         },
         {
             "aid": 2,
             "role": "tester",
             "entry": False,
+            "model": CONFIG["model"],
             "tools": sorted(TESTER_TOOL_NAMES),
             "permission_mode": "auto",
             "workspace": workspaces[2],
             "workspace_isolated": False,
             # The tester uses the same sandboxed shell policy as the coder.
             "shell": "sandbox_required",
+            "token_allowance": per_agent_cap,
         },
     ]
 
