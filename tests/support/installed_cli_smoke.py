@@ -50,8 +50,13 @@ def main() -> None:
                 assert "parsed-value" in result.stdout, result.stdout
                 assert str(workspace) in result.stdout, result.stdout
             results.append({"arguments": arguments, "exit_code": result.returncode})
+    versions = {name: metadata.version(name) for name in ("opencollab", "typer")}
+    try:
+        versions["click"] = metadata.version("click")
+    except metadata.PackageNotFoundError:
+        versions["click"] = "vendored by Typer"
     print(json.dumps({
-        "versions": {name: metadata.version(name) for name in ("opencollab", "typer", "click")},
+        "versions": versions,
         "package": str(package), "commands": results,
     }, indent=2))
 
