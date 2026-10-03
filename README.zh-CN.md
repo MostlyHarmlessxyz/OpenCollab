@@ -68,7 +68,7 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型和工具，以及谁可以给谁发消息。从示例开始：
+- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型、工具和 token 额度，所有角色共用的 context policy，以及谁可以给谁发消息。从示例开始：
 
   ```bash
   cp configs/team.example.yaml configs/team.yaml   # 编辑角色、工具和拓扑
@@ -112,7 +112,7 @@ Framework with Programmable Collaboration and Controllable Runtime*](https://arx
 ```bibtex
 @misc{hsu2026opencollab,
   author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and
-                   Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and
+                   Li, Hanyu and Li, Jie and Liu, Mengyang and Liu, Zhixuan and
                    Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and
                    Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
   title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},

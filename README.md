@@ -70,8 +70,9 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team.** A YAML file declares each role's prompt, model, and tools, and who
-  may message whom. Start from the example:
+- **Team.** A YAML file declares each role's prompt, model, tools, and token
+  allowance, the context policy, and who may message whom. Start from the
+  example:
 
   ```bash
   cp configs/team.example.yaml configs/team.yaml   # edit roles, tools, and topology
@@ -126,7 +127,7 @@ Controllable Runtime*](https://arxiv.org/abs/2609.38345). OpenCollab builds on
 ```bibtex
 @misc{hsu2026opencollab,
   author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and
-                   Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and
+                   Li, Hanyu and Li, Jie and Liu, Mengyang and Liu, Zhixuan and
                    Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and
                    Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
   title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},
