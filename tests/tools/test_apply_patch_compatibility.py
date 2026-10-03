@@ -1,5 +1,7 @@
 """Explicit content matching preserves strict default editing behavior."""
 
+import pytest
+
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from tests.tools.test_edit_tool import _runtime, run
 
@@ -221,3 +223,28 @@ def test_relocation_with_a_terminator_keeps_crlf_bytes(tmp_path):
     })
     assert result.startswith("Applied line_replace")
     assert target.read_bytes() == b"zero\r\nB\r\n\r\ntail\r\n"
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D08 empty source EOF disagrees with Git")
+@pytest.mark.parametrize("target_text", ["value\n", "value", "value\n\n"])
+def test_empty_file_unified_diff_matches_git_eof_bytes(tmp_path, target_text):
+    import subprocess
+
+    ws, target = _file(tmp_path, "")
+    for args in [
+        ["init", "-q"], ["config", "user.name", "Test User"],
+        ["config", "user.email", "tests@example.invalid"], ["add", "f.py"],
+        ["-c", "commit.gpgsign=false", "commit", "-qm", "empty file"],
+    ]:
+        subprocess.run(["git", *args], cwd=ws, check=True, capture_output=True)
+    target.write_text(target_text)
+    patch = subprocess.run(
+        ["git", "diff", "--", "f.py"], cwd=ws, check=True, capture_output=True, text=True,
+    ).stdout
+    target.write_text("")
+    subprocess.run(["git", "apply", "-"], cwd=ws, input=patch, text=True, check=True, capture_output=True)
+    assert target.read_bytes() == target_text.encode()
+    target.write_text("")
+    result = _apply(ws, {"path": "f.py", "mode": "unified_diff", "patch": patch})
+    assert result.startswith("Applied unified_diff")
+    assert target.read_bytes() == target_text.encode()
