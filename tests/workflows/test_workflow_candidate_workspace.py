@@ -389,3 +389,28 @@ async def test_candidate_capture_includes_committed_and_uncommitted_edits(tmp_pa
         assert (repo / "new_file.py").read_text() == "new_value = 4\n"
     finally:
         await lease.cleanup()
+
+
+@pytest.mark.parametrize("name", [
+    "protected.txt", "protected file.txt",
+    *[pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="OC-D07 Git quoted path is unmatched"))
+      for name in ["protected_数据.txt", "protected\tfile.txt"]],
+])
+@pytest.mark.asyncio
+async def test_candidate_adoption_preserves_git_quoted_file_paths(tmp_path, name):
+    repo = _repository(tmp_path)
+    _git(repo, "config", "core.quotePath", "true")
+    protected = repo / name
+    protected.write_text("protected = True\n")
+    _git(repo, "add", "--", name)
+    _git(repo, "commit", "-m", "protected file")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        await lease.environment.write_file(name, "protected = False\n")
+        patch = await lease.diff()
+        with pytest.raises(ValueError, match="preserved"):
+            await workspace.adopt(patch, preserve_paths=[name])
+        assert protected.read_text() == "protected = True\n"
+    finally:
+        await lease.cleanup()
