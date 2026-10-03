@@ -7,7 +7,6 @@ from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
 
 
 @pytest.mark.parametrize("terminal", ["agent_cancelled", "agent_failed", "agent_completed"])
-@pytest.mark.xfail(strict=True, reason="P3-01 terminal events retain active tools")
 def test_terminal_agent_event_clears_child_tools_and_thinking(terminal):
     tui = TUI()
     tui.set_redraw(lambda: None)
