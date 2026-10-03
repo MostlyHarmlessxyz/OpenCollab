@@ -9,12 +9,7 @@ from opencollab.bootstrap.team_config import load_team_config
 from tests.support.bootstrap_test_support import spawn_config
 
 
-@pytest.mark.parametrize("profile", [
-    "default",
-    pytest.param("Default", marks=pytest.mark.xfail(strict=True, reason="P2-15 default casing")),
-    pytest.param("DEFAULT", marks=pytest.mark.xfail(strict=True, reason="P2-15 default casing")),
-    " default ",
-])
+@pytest.mark.parametrize("profile", ["default", "Default", "DEFAULT", " default "])
 def test_default_profile_alias_keeps_the_custom_role_prompt(tmp_path, profile):
     path = tmp_path / "team.yaml"
     path.write_text(
