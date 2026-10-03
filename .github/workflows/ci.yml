@@ -38,7 +38,7 @@ jobs:
       - name: Dependency hygiene
         run: uv run deptry .
       - name: Test
-        run: uv run pytest -v -o faulthandler_timeout=60
+        run: uv run pytest -q
       - name: Blueprint DOM regressions (Node 20 or newer)
         if: matrix.python-version == '3.12'
         env:
