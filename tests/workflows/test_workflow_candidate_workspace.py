@@ -365,3 +365,28 @@ async def test_candidate_isolation_accepts_legacy_factory_signature(tmp_path, ne
     assert parent.tokens_spent() == 7
     assert parent.agent_failures == ()
     assert base.revoked is False
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D06 capture is relative to candidate HEAD")
+@pytest.mark.asyncio
+async def test_candidate_capture_includes_committed_and_uncommitted_edits(tmp_path):
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(base)
+    lease = await workspace.acquire("candidate")
+    try:
+        candidate_repo = Path(lease.candidate_workspace)
+        await lease.environment.write_file("source.py", "value = 2\n")
+        _git(candidate_repo, "add", "source.py")
+        _git(candidate_repo, "-c", "commit.gpgsign=false", "commit", "-m", "candidate change")
+        await lease.environment.write_file("source.py", "value = 3\n")
+        await lease.environment.write_file("new_file.py", "new_value = 4\n")
+        diff = await lease.diff()
+        assert "-value = 1" in diff
+        assert "+value = 3" in diff
+        assert "+new_value = 4" in diff
+        await workspace.adopt(diff)
+        assert (repo / "source.py").read_text() == "value = 3\n"
+        assert (repo / "new_file.py").read_text() == "new_value = 4\n"
+    finally:
+        await lease.cleanup()
