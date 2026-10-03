@@ -12,10 +12,9 @@ from opencollab.application.tool_execution import ToolRuntime
 
 @pytest.mark.parametrize("stat_only", [False, True])
 @pytest.mark.parametrize("focused", [False, True])
-@pytest.mark.xfail(strict=True, reason="P3-05 untracked paths are relative to the Git root")
 def test_git_diff_reads_untracked_paths_from_a_unicode_subdirectory(tmp_path, stat_only, focused):
     root = tmp_path / "root repo"
-    workspace = root / "子 package"
+    workspace = root / "\u5b50 package"
     workspace.mkdir(parents=True)
 
     def git(*arguments):
@@ -29,11 +28,11 @@ def test_git_diff_reads_untracked_paths_from_a_unicode_subdirectory(tmp_path, st
     git("add", ".")
     git("commit", "-q", "-m", "init")
     tracked.write_text("tracked_change = 2\n", encoding="utf-8")
-    (workspace / "新 file.py").write_text("new_change = 3\n", encoding="utf-8")
+    (workspace / "\u65b0 file.py").write_text("new_change = 3\n", encoding="utf-8")
     (root / "outside.py").write_text("outside_change = 4\n", encoding="utf-8")
     parameters = {"include_status": False, "stat_only": stat_only}
     if focused:
-        parameters["path"] = "新 file.py"
+        parameters["path"] = "\u65b0 file.py"
     runtime = ToolRuntime(environment=LocalEnvironment(str(workspace)), safety_policy=None, permission_policy=None)
 
     result = asyncio.run(GitDiffTool().execute_with_runtime(parameters, runtime))
