@@ -326,3 +326,28 @@ async def test_public_sdk_enforces_finite_and_preserves_unbounded_sessions(
         assert all(session.max_steps == 1 for session in sessions)
         assert all(context == 1048576 for _, context in calls)
         assert len(outputs) == 3 and not outputs[-1]
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D01 cancelled child sessions disappear from parent")
+async def test_cancelled_candidate_keeps_completed_sessions_and_spend(repository):
+    factory = FakeFactory([FakeSession(tokens=20), FakeSession(tokens=30), FakeSession()])
+    parent = _context(repository, factory, 100)
+    await parent.agent("earlier work")
+    completed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def nested(child, _args):
+        await child.agent("finished candidate role")
+        completed.set()
+        await release.wait()
+
+    task = asyncio.create_task(parent.candidate_workflow(nested, {}, label="candidate"))
+    await asyncio.wait_for(completed.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert parent.tokens_spent() == 50
+    assert len(parent.sessions) == 2
+    assert parent.pending_cleanup_tasks == ()
+    await parent.agent("later work")
+    assert factory.builds[-1]["budget"] == 70
