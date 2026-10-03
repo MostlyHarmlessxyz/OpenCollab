@@ -345,9 +345,10 @@ async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resour
     assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
 
 
+@pytest.mark.xfail(strict=True, reason="OC-D02 candidate isolation accepts unscoped legacy capabilities")
 @pytest.mark.parametrize("nested_wrapper", [False, True])
 @pytest.mark.asyncio
-async def test_candidate_isolation_accepts_legacy_factory_signature(tmp_path, nested_wrapper):
+async def test_candidate_isolation_rejects_legacy_factory_before_allocating(tmp_path, nested_wrapper):
     from opencollab.application.workflow_candidates import _CandidateWorkflowSessionFactory
     from tests.support.workflow_context_test_support import FakeFactory, FakeSession
 
@@ -361,9 +362,10 @@ async def test_candidate_isolation_accepts_legacy_factory_signature(tmp_path, ne
         return await child.agent("legacy isolation", isolation=True, label="scout")
 
     candidate = await parent.candidate_workflow(nested, {}, label="candidate")
-    assert candidate.output == "done"
-    assert parent.tokens_spent() == 7
-    assert parent.agent_failures == ()
+    assert candidate.output is None
+    assert parent.tokens_spent() == 0
+    assert parent.agent_failures[0]["exception_type"] == "TypeError"
+    assert legacy.handed_out == []
     assert base.revoked is False
 
 
@@ -415,10 +417,11 @@ async def test_candidate_adoption_preserves_git_quoted_file_paths(tmp_path, name
 
 
 @pytest.mark.asyncio
-async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_path):
+async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_path, monkeypatch):
     import asyncio
 
-    from tests.support.workflow_context_test_support import FakeFactory, FakeSession
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
 
     class LegacyCancelledError(asyncio.CancelledError):
         add_note = None
@@ -429,10 +432,11 @@ async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_pat
 
     repo = _repository(tmp_path)
     base = LocalEnvironment(str(repo))
-    parent = WorkflowContext(
-        FakeFactory([ClosingSession(tokens=7)]), budget_total=100,
-        candidate_workspace=EnvCandidateWorkspace(base),
+    monkeypatch.setattr(runtime, "build_session", lambda **kwargs: ClosingSession(tokens=7))
+    factory = runtime.WorkflowSessionFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None, workspace=str(repo), env=base,
     )
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
     original = LegacyCancelledError("original cancellation")
 
     async def nested(child, _args):
@@ -446,3 +450,62 @@ async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_pat
     assert parent.tokens_spent() == 7
     assert parent.tokens_remaining() == 93
     assert parent.budget._leases == []
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D02 legacy cleanup releases other owners")
+@pytest.mark.asyncio
+async def test_candidate_rejects_old_factory_without_releasing_other_owner(tmp_path, monkeypatch):
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+
+    class LegacyFactory(runtime.WorkflowSessionFactory):
+        allocations = 0
+        releases = 0
+
+        async def acquire_isolated_env(self, *, label=None):
+            self.allocations += 1
+            return await super().acquire_isolated_env(label=label)
+
+        async def release_isolated_envs(self):
+            self.releases += 1
+            await super().release_isolated_envs()
+
+    class ReadingSession(FakeSession):
+        def __init__(self, environment):
+            super().__init__(tokens=3)
+            self.environment = environment
+
+        async def run_loop(self, cancel_event=None):
+            return await self.environment.read_file("source.py")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(runtime, "build_session", lambda **kwargs: ReadingSession(kwargs["env"]))
+    factory = LegacyFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None, workspace=str(repo), env=base,
+    )
+    other = await factory.acquire_isolated_env(label="other-owner")
+    try:
+        parent = WorkflowContext(factory, candidate_workspace=EnvCandidateWorkspace(base))
+
+        async def nested(child, _args):
+            return await child.agent("inspect", isolation=True)
+
+        candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+        assert candidate.output is None
+        assert parent.agent_failures[0]["exception_type"] == "TypeError"
+        assert factory.allocations == 1
+        assert factory.releases == 0
+        assert other.revoked is False
+        assert await other.read_file("source.py") == "value = 1\n"
+        ordinary = WorkflowContext(factory)
+        assert await ordinary.agent("ordinary legacy role", isolation=True) == "value = 1\n"
+        assert ordinary.agent_failures == ()
+        assert factory.allocations == 2
+    finally:
+        await factory.release_isolated_envs()
+    assert base.revoked is False
