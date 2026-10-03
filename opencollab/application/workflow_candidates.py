@@ -47,8 +47,9 @@ class _CandidateLeaseTreeProbe:
         return bool((await self._lease.diff()).strip())
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
-        del paths
-        return await self.changed()
+        if not paths:
+            return await self.changed()
+        return bool((await self._lease.diff(exclude_paths=paths)).strip())
 
     async def diff(self) -> str:
         return await self._lease.diff()

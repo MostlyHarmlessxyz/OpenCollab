@@ -251,9 +251,7 @@ async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(
     assert base.revoked is False
 
 
-@pytest.mark.parametrize("source_edit", [
-    pytest.param(False, marks=pytest.mark.xfail(strict=True, reason="OC-D03 exclusions are ignored")), True,
-])
+@pytest.mark.parametrize("source_edit", [False, True])
 @pytest.mark.asyncio
 async def test_candidate_source_changed_honors_excluded_paths(tmp_path, source_edit):
     repo = _repository(tmp_path)

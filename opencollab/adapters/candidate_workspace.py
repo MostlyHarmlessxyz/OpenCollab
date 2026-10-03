@@ -99,10 +99,11 @@ class _CandidateLease:
     candidate_workspace: str
     cleaned: bool = False
 
-    async def diff(self) -> str:
+    async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
         return await _raw_diff_at(
             self.base_environment,
             self.candidate_workspace,
+            exclude_paths,
         )
 
     async def cleanup(self) -> None:
