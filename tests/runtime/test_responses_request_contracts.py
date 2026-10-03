@@ -358,7 +358,7 @@ async def test_responses_client_applies_native_rules_only_to_native_endpoint(mon
     try:
         response = await client.complete([{"role": "user", "content": "work"}], temperature=0.2)
     finally:
-        await client.aclose()
+        await client.close()
 
     assert response.content == "done"
     assert ("temperature" in requests[0]) is (not native)
