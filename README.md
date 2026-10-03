@@ -49,9 +49,11 @@ cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
 uv run opencollab --workspace .
 ```
 
-`configs/.env` accepts any OpenAI-compatible or Anthropic endpoint; never commit
-real API keys. The command starts the built-in `lead` agent, which may spawn
-specialists as needed. To run Duo on a Git repository:
+`configs/.env` accepts any OpenAI-compatible or Anthropic endpoint. Never commit
+real API keys. The command starts the built-in Self-Collaboration team. Its
+Analyst entry plans and delegates to the Coder and Tester over a closed topology.
+To define additional roles, select an explicit team file as shown below.
+To run Duo on a Git repository, use this command.
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \

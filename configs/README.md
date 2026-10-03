@@ -167,16 +167,16 @@ cp configs/team.example.yaml configs/team.yaml
 uv run opencollab --team-config configs/team.yaml --workspace .
 ```
 
-OpenCollab selects a team through these inputs, in priority order.
+CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)` selects an
+explicit team first. Otherwise, OpenCollab reads the process environment
+variable `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`. The fallback is the built-in
+Self-Collaboration team with an `analyst` entry, a `coder`, and a `tester`.
 
-1. CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)`
-2. Process environment variable `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`
-3. The built-in single `lead` configuration
-
-Select `configs/team.yaml` through one of these inputs to activate it. With no
-selected team file, the built-in `lead` may spawn any ad-hoc role. See
-`team.example.yaml` for the schema (lead/analyst/coder/reviewer plus a
-`topology` graph). A selected file that is missing or unsafe raises an error.
+The built-in topology allows the Analyst to spawn the Coder and Tester. The
+Coder and Tester each work within their own tool bundle. To add a role such as
+`reviewer`, declare it and its topology edges in a team file, then select that
+file through one of the explicit inputs. See `team.example.yaml` for the schema.
+A selected file that is missing or unsafe raises an error.
 
 `team.collab.yaml` is a ready-made three-role team (Analyst, Coder, Tester) that
 hands work over rather than doing it in one seat, with every role prompt inline.
