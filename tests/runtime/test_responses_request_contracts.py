@@ -336,8 +336,21 @@ def test_compatible_responses_provider_retains_its_sampling_parameters(model):
     ("openai", None, None, True),
     (" OpenAI ", None, None, True),
     ("openai", "https://api.openai.com/v1", None, True),
+    ("openai", "https://us.api.openai.com/v1", None, True),
+    ("openai", "https://eu.api.openai.com/v1", None, True),
+    ("openai", "https://au.api.openai.com/v1", None, True),
+    ("openai", "https://ca.api.openai.com/v1", None, True),
+    ("openai", "https://jp.api.openai.com/v1", None, True),
+    ("openai", "https://in.api.openai.com/v1", None, True),
+    ("openai", "https://sg.api.openai.com/v1", None, True),
+    ("openai", "https://kr.api.openai.com/v1", None, True),
+    ("openai", "https://gb.api.openai.com/v1", None, True),
+    ("openai", "https://ae.api.openai.com/v1", None, True),
     ("openai", "https://gateway.example.invalid/v1", None, False),
+    ("openai", "https://custom.api.openai.com/v1", None, False),
+    ("openai", "https://eu.api.openai.com.example.invalid/v1", None, False),
     ("openai", None, "https://gateway.example.invalid/v1", False),
+    ("openai", None, "https://eu.api.openai.com/v1", True),
     ("openai", None, "https://api.openai.com/v1", True),
     ("openai", "https://api.openai.com/v1", "https://gateway.example.invalid/v1", True),
     ("custom", None, None, False),
@@ -375,3 +388,30 @@ async def test_responses_client_applies_native_rules_only_to_native_endpoint(
 
     assert response.content == "done"
     assert ("temperature" in requests[0]) is (not native)
+
+
+@pytest.mark.parametrize("base_url", ["https://us.api.openai.com/v1", "https://eu.api.openai.com/v1"])
+async def test_regional_responses_client_rejects_unsupported_top_p_before_request(monkeypatch, base_url):
+    from opencollab.adapters.llm.client import LLMClient
+
+    client = LLMClient(
+        model="gpt-5.2", provider="openai", base_url=base_url, wire_protocol="responses",
+        api_key="fixture-key",  # pragma: allowlist secret
+    )
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+        raise AssertionError("unsupported parameters reached the provider")
+
+    monkeypatch.setattr(client._openai.responses, "create", create)
+    try:
+        with pytest.raises(ResponsesProtocolError, match="does not support explicit top_p"):
+            await client.complete(
+                [{"role": "user", "content": "work"}], temperature=0.2,
+                top_p=0.9, reasoning_effort="high",
+            )
+    finally:
+        await client.close()
+
+    assert requests == []
