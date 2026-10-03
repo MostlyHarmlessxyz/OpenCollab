@@ -152,6 +152,7 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
 
     assert result.ok, result.error
     assert result.output["status"] == "done", (result.output, result.agent_failures)
+    assert result.output["prompt_revision"] == 8
     assert result.output["winner"] == result.output["adopted"] == "B"
     assert result.output["shared_public_command"] == command
     assert result.output["judge_used"] is both_pass
@@ -176,6 +177,8 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     assert "return 1" in _last_tool_result(sessions[1][2].calls[1])
     assert command in str(sessions[1][2].calls[0])
     for session, kwargs, scripted in sessions:
+        assert "final deliverable" in str(scripted.calls[0])
+        assert "affected focused checks" in str(scripted.calls[0])
         actual_profile = kwargs["agent_profile"]
         assert (None if actual_profile is None else actual_profile.name) == profile
         if profile == "single2":

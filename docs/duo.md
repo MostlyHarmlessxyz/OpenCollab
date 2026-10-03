@@ -2,7 +2,7 @@
 
 [Chinese guide](duo/README.zh-CN.md)
 
-Duo V7 produces two isolated solutions to a task, compares their evidence, and
+Duo V8 produces two isolated solutions to a task, compares their evidence, and
 adopts one result. Its task-oriented role prompts cover source changes,
 configuration, data and other required artifacts. The runtime supplies the
 candidate environments and delivery mechanism.
@@ -69,6 +69,13 @@ updates when those changes belong to the task. They protect independent
 validation and withheld reference answers. Commits and other submission
 mechanisms follow the task or runtime's requirements.
 
+V8 focuses verification on the final deliverable through the task's intended
+entry points or outputs, including existing behavior directly affected by the
+changes. Coders rerun affected focused checks after the last relevant edit or
+cleanup and distinguish unchanged project checks from candidate-added or modified
+checks. These shared instructions cover both submission modes and apply to code,
+files, and service state. The task and runtime continue to define delivery.
+
 Candidate A pursues the simplest complete solution. Candidate B checks the
 outcome end to end, including dependencies, interactions and boundary cases.
 B receives the public verification command observed from A and is asked to run
@@ -107,7 +114,7 @@ adjudication. Identical diffs select B.
 
 The current prompt text is kept together in
 [`_prompts.py`](../opencollab/builtin_workflows/_prompts.py). Its internal revision
-is 7 and is recorded as `prompt_revision` in the result. Callers use `duo`
+is 8 and is recorded as `prompt_revision` in the result. Callers use `duo`
 without a prompt-version suffix.
 
 `requirements_complete` records whether the adjudicator has accounted for every
@@ -161,7 +168,7 @@ Duo's output records `winner` and `adopted` separately, because a failed adoptio
 may fall back to the other candidate. `status` is `done` after successful adoption,
 `incomplete` when no candidate is adopted, or `error` when the task is missing.
 The output also retains selection reasons, candidate evidence, adoption attempts
-and token consumption. V7 addresses candidate selection through behavior evidence
+and token consumption. Duo addresses candidate selection through behavior evidence
 and the default-B preference. Task correctness is established by the caller's actual
 checks and, when applicable, the evaluator's formal scoring.
 

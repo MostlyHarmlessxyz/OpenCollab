@@ -7,6 +7,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+Duo V8 asks coders to verify the final deliverable through the task's intended
+entry points or outputs, check directly affected existing behavior, and rerun
+focused checks after the last relevant edit or cleanup. Shared task-oriented
+instructions distinguish unchanged project checks from candidate-added or
+modified checks. Results report `prompt_revision=8` for both submission modes.
+
 ### Fixed
 
 Workflow role failures retain bounded, message-free exception chains, and sticky
