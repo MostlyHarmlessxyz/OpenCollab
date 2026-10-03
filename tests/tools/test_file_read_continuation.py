@@ -2,14 +2,11 @@
 
 import asyncio
 
-import pytest
-
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools.fs import FileReadTool
 from opencollab.application.tool_execution import ToolRuntime
 
 
-@pytest.mark.xfail(strict=True, reason="P3-06 character cuts advertise an absent next line")
 def test_long_single_line_read_explains_character_cut_without_next_line(tmp_path):
     (tmp_path / "minified.js").write_text("x" * 200, encoding="utf-8")
     runtime = ToolRuntime(environment=LocalEnvironment(str(tmp_path)), safety_policy=None, permission_policy=None)
