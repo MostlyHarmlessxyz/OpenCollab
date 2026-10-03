@@ -514,10 +514,7 @@ async def test_candidate_rejects_old_factory_without_releasing_other_owner(tmp_p
     ("source file.txt", "target file.txt"),
     ("source_\u6570\u636e.txt", "target_\u6570\u636e.txt"),
 ])
-@pytest.mark.parametrize("preserved_endpoint", [
-    pytest.param("source", marks=pytest.mark.xfail(strict=True, reason="OC-D07 rename source is omitted")),
-    "target", None,
-])
+@pytest.mark.parametrize("preserved_endpoint", ["source", "target", None])
 @pytest.mark.asyncio
 async def test_candidate_rename_preserves_both_endpoints(tmp_path, names, preserved_endpoint):
     source_name, target_name = names

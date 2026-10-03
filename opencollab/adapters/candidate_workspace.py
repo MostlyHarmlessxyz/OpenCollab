@@ -14,6 +14,7 @@ from typing import Any
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.env import DockerWorkspaceEnvironment
+from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
 
@@ -272,6 +273,7 @@ class EnvCandidateWorkspace:
         reversed_original = False
         try:
             candidate_paths = await self._patch_paths(candidate_file)
+            candidate_paths.update(patch_paths(patch))
             if candidate_paths.intersection(preserved):
                 raise ValueError("candidate patch overlaps a preserved path")
             if original_source.strip():
