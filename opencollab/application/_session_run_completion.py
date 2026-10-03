@@ -16,6 +16,7 @@ from opencollab.application._session_run_shared import (
     _ContextOverflowStop,
     _request_tool_names,
     _submit_tool_choice,
+    _TeamBudgetStop,
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
@@ -586,6 +587,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
 
     def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
+        # Summary calls await provider work after PRECHECK. Their usage, or a
+        # sibling's concurrent usage, can exhaust the shared allowance meanwhile.
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            raise _TeamBudgetStop
         configured_output_tokens = getattr(
             self.agent,
             "max_tokens_per_step",

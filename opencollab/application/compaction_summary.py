@@ -16,7 +16,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable
 
-from opencollab.application._session_run_shared import GenerationTimeoutError, _TokenBudgetStop
+from opencollab.application._session_run_shared import GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application.compaction_prompt import (
     build_summary_request,
     format_compact_summary,
@@ -123,7 +123,7 @@ class ReadTimeSummarizer:
             response = await self._acomplete(request)
             raw = getattr(response, "content", None) or ""
             summary = format_compact_summary(raw)
-        except (GenerationTimeoutError, _TokenBudgetStop):
+        except (GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop):
             raise
         except Exception:
             return self._fallback(segment)
