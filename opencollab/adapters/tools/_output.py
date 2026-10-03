@@ -22,14 +22,19 @@ def truncate(text: str, max_chars: int, label: str | None = None) -> str:
     if len(text) <= max_chars:
         return text
     dropped = len(text) - max_chars
-    marker = (
-        f"\n\n... [{dropped} chars of {label} truncated] ...\n\n"
-        if label is not None
-        else f"\n\n... [{dropped} chars truncated] ...\n\n"
-    )
+    while True:
+        marker = (
+            f"\n\n... [{dropped} chars of {label} truncated] ...\n\n"
+            if label is not None
+            else f"\n\n... [{dropped} chars truncated] ...\n\n"
+        )
+        source_budget = max(0, max_chars - len(marker))
+        actual_dropped = len(text) - source_budget
+        if actual_dropped == dropped:
+            break
+        dropped = actual_dropped
     if len(marker) >= max_chars:
         return marker[:max_chars]
-    source_budget = max_chars - len(marker)
     head = (source_budget + 1) // 2
     tail = source_budget - head
     suffix = text[-tail:] if tail else ""

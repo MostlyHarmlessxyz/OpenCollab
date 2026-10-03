@@ -9,7 +9,6 @@ from opencollab.adapters.tools._output import truncate
 
 @pytest.mark.parametrize("label", [None, "stdout", "Unicode \u8f93\u51fa"])
 @pytest.mark.parametrize(("size", "cap"), [(1000, 64), (1100, 150), (10100, 1000), (10000, 9980)])
-@pytest.mark.xfail(strict=True, reason="P3-07 omission count excludes the marker")
 def test_truncation_count_matches_source_characters_actually_removed(label, size, cap):
     text = "α" * size
 
