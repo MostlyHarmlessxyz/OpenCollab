@@ -313,7 +313,7 @@ def _apply_unified_diff(
     src_lines, ended_nl = _split_lines(source)
     result: list[str] = []
     src_idx = 0  # how far through src_lines we've consumed
-    target_ended_nl = ended_nl
+    target_ended_nl = ended_nl if src_lines else True
 
     for n, hunk in enumerate(hunks, 1):
         old_block: list[str] = []
@@ -370,7 +370,7 @@ def _apply_unified_diff(
             ):
                 return None, f"hunk #{n} has newline metadata on a non-final line."
             old_has_no_newline = bool(old_no_newline_positions)
-            if ended_nl == old_has_no_newline:
+            if src_lines and ended_nl == old_has_no_newline:
                 return None, (
                     f"hunk #{n} newline metadata does not match the source EOF."
                 )

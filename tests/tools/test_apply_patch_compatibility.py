@@ -225,7 +225,6 @@ def test_relocation_with_a_terminator_keeps_crlf_bytes(tmp_path):
     assert target.read_bytes() == b"zero\r\nB\r\n\r\ntail\r\n"
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D08 empty source EOF disagrees with Git")
 @pytest.mark.parametrize("target_text", ["value\n", "value", "value\n\n"])
 def test_empty_file_unified_diff_matches_git_eof_bytes(tmp_path, target_text):
     import subprocess
