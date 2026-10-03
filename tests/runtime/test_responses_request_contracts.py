@@ -327,17 +327,24 @@ def test_compatible_responses_provider_retains_its_sampling_parameters(model):
     assert kwargs["top_p"] == 0.9
 
 
-@pytest.mark.parametrize("provider,base_url,native", [
-    ("openai", None, True),
-    ("openai", "https://api.openai.com/v1", True),
-    ("openai", "https://gateway.example.invalid/v1", False),
-    ("custom", None, False),
+@pytest.mark.parametrize("provider,base_url,environment_url,native", [
+    ("openai", None, None, True),
+    ("openai", "https://api.openai.com/v1", None, True),
+    ("openai", "https://gateway.example.invalid/v1", None, False),
+    ("openai", None, "https://gateway.example.invalid/v1", False),
+    ("openai", None, "https://api.openai.com/v1", True),
+    ("openai", "https://api.openai.com/v1", "https://gateway.example.invalid/v1", True),
+    ("custom", None, None, False),
 ])
-async def test_responses_client_applies_native_rules_only_to_native_endpoint(monkeypatch, provider, base_url, native):
+async def test_responses_client_applies_native_rules_only_to_native_endpoint(
+    monkeypatch, provider, base_url, environment_url, native,
+):
     from opencollab.adapters.llm import client as client_module
     from tests.support.responses_provider_test_support import completed_response, message_item
 
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    if environment_url is not None:
+        monkeypatch.setenv("OPENAI_BASE_URL", environment_url)
     client = client_module.LLMClient(
         model="gpt-5", provider=provider, base_url=base_url, wire_protocol="responses",
         api_key="fixture-key",  # pragma: allowlist secret

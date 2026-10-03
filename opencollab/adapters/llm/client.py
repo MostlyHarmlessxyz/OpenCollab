@@ -251,7 +251,7 @@ class LLMClient:
                         response_session_id=response_session_id or uuid.uuid4().hex,
                         native_openai=(
                             self.provider == "openai"
-                            and (not self.base_url or urlsplit(self.base_url).hostname == "api.openai.com")
+                            and urlsplit(str(self._openai.base_url)).hostname == "api.openai.com"
                         ),
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,
