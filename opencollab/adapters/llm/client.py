@@ -30,6 +30,13 @@ from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 from opencollab.domain.token_estimation import estimate_request_tokens
 
+# Native data-residency endpoints share the OpenAI model parameter rules.
+_NATIVE_OPENAI_HOSTS = {
+    "api.openai.com", "us.api.openai.com", "eu.api.openai.com", "au.api.openai.com",
+    "ca.api.openai.com", "jp.api.openai.com", "in.api.openai.com", "sg.api.openai.com",
+    "kr.api.openai.com", "gb.api.openai.com", "ae.api.openai.com",
+}
+
 _ledger_lock = threading.Lock()
 
 
@@ -252,7 +259,7 @@ class LLMClient:
                         response_session_id=response_session_id or uuid.uuid4().hex,
                         native_openai=(
                             normalize_provider(self.provider) == "openai"
-                            and urlsplit(str(self._openai.base_url)).hostname == "api.openai.com"
+                            and urlsplit(str(self._openai.base_url)).hostname in _NATIVE_OPENAI_HOSTS
                         ),
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,
