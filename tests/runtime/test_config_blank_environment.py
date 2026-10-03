@@ -7,11 +7,7 @@ import pytest
 from opencollab.bootstrap.config import build_config
 
 
-@pytest.mark.parametrize("blank", [
-    "",
-    pytest.param(" ", marks=pytest.mark.xfail(strict=True, reason="P3-02 blank environment value")),
-    pytest.param("\t\n", marks=pytest.mark.xfail(strict=True, reason="P3-02 blank environment value")),
-])
+@pytest.mark.parametrize("blank", ["", " ", "\t\n"])
 @pytest.mark.parametrize(("variable", "field", "value", "expected"), [
     ("OPENCOLLAB_API_KEY", "api_key", "fixture-key", "fixture-key"),
     ("OPENCOLLAB_MODEL", "model", "file-model", "file-model"),
