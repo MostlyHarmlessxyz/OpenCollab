@@ -52,6 +52,8 @@ async def test_parallel_candidates_ignore_internal_capture_files(monkeypatch, tm
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=10)
         assert done, "a candidate must settle while the other capture is suspended"
     finally:
+        # Let the surviving model settle if its peer failed before the barrier.
+        both_ready.set()
         release_capture.set()
         outcomes = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
         for entry in _git(repo, "worktree", "list", "--porcelain").splitlines():
