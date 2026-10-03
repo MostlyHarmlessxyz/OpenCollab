@@ -339,7 +339,6 @@ def test_scheduler_can_leave_every_seat_without_a_step_ceiling(tmp_path):
     assert scheduler._session_factory._max_steps is None
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D09 bootstrap rejects journal-only snapshots")
 @pytest.mark.asyncio
 async def test_build_scheduler_restores_zero_step_journal_only_session(tmp_path, monkeypatch):
     import asyncio

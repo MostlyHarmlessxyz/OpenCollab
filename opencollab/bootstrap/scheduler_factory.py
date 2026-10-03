@@ -193,7 +193,7 @@ def build_scheduler(
     ``None`` — the default — means "whatever ``interactive`` says", so every
     existing call site keeps its current behaviour without being touched.
     """
-    if session_file is not None and not Path(session_file).is_file():
+    if session_file is not None and not SessionStore().has_snapshot(session_file):
         raise ValueError(f"session file does not exist: {session_file}")
 
     cfg = ctx.config
