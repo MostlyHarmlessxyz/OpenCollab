@@ -412,3 +412,38 @@ async def test_candidate_adoption_preserves_git_quoted_file_paths(tmp_path, name
         assert protected.read_text() == "protected = True\n"
     finally:
         await lease.cleanup()
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D02 cleanup calls unavailable exception add_note")
+@pytest.mark.asyncio
+async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_path):
+    import asyncio
+
+    from tests.support.workflow_context_test_support import FakeFactory, FakeSession
+
+    class LegacyCancelledError(asyncio.CancelledError):
+        add_note = None
+
+    class ClosingSession(FakeSession):
+        async def aclose(self):
+            raise OSError("isolated close failed")
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    parent = WorkflowContext(
+        FakeFactory([ClosingSession(tokens=7)]), budget_total=100,
+        candidate_workspace=EnvCandidateWorkspace(base),
+    )
+    original = LegacyCancelledError("original cancellation")
+
+    async def nested(child, _args):
+        await child.agent("finished role", isolation=True)
+        raise original
+
+    with pytest.raises(LegacyCancelledError) as captured:
+        await parent.candidate_workflow(nested, {}, label="candidate")
+    assert captured.value is original
+    assert any("isolated close failed" in note for note in original.__notes__)
+    assert parent.tokens_spent() == 7
+    assert parent.tokens_remaining() == 93
+    assert parent.budget._leases == []
