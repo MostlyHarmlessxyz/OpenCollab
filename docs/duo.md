@@ -159,13 +159,14 @@ by identity. Required files and live services are retained by that backend.
 Candidate validity and adoption are enforced by the runtime. Empty changes remain
 an incomplete result under the existing patch-based selection rules.
 
-Git candidates start with the source's current tracked and untracked contents.
+Git candidates start with the source's current tracked and non-ignored untracked contents.
 Their delivered patches describe the subsequent candidate edits. Adoption applies
 that increment to the current source files and preserves independent user edits
 and the source index. A conflicting patch leaves the current source in place.
 If the source changes while a candidate is running, the runtime reports the
 change and retains the candidate worktree. The error includes its original Git
-tree for recovery with commands such as `git show <tree>:<path>`.
+tree, which remains referenced by `refs/worktree/opencollab-source` in the
+retained worktree, for recovery with commands such as `git show <tree>:<path>`.
 
 `goal` supplies the task and `description` is an accepted alternative.
 `injected_test_paths` lets an evaluation integration preserve its protected test

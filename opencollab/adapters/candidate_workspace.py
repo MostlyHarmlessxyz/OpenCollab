@@ -228,6 +228,16 @@ class EnvCandidateWorkspace:
                     ),
                     "candidate source tree",
                 ).strip()
+            # A worktree-local ref retains the original contents for recovery
+            # throughout the lease, including after commits or Git collection.
+            _complete(
+                await self._environment.exec_cmd(
+                    f"git -C {shlex.quote(path)} update-ref refs/worktree/opencollab-source "
+                    f"{shlex.quote(lease.base_revision)}",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                "candidate source recovery reference",
+            )
             return lease
         except BaseException:
             await lease.cleanup()
