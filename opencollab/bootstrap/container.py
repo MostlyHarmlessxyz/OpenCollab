@@ -21,6 +21,7 @@ order acyclic regardless of which module is imported first.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 from pathlib import Path
@@ -442,6 +443,11 @@ def build_session_runtime(
     ``shaper`` reshapes the message list before each model call; without
     one, ``context_policy`` (default: the default policy) picks the layers.
     """
+    # A session may narrow these controls during wind-down. Keep the reusable
+    # template intact while retaining the tool objects and their resources.
+    agent = copy.copy(agent)
+    agent.tools = list(getattr(agent, "tools", ()) or ())
+    agent.tool_choice = copy.deepcopy(getattr(agent, "tool_choice", None))
     resolved_context = context_policy if context_policy is not None else ContextPolicy()
     resolved_env = env if env is not None else LocalEnvironment()
     resolved_store: SessionStorePort = store if store is not None else SessionStore()

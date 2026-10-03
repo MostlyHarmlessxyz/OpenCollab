@@ -88,7 +88,7 @@ class Session:
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
     ):
-        self.agent = agent
+        self.agent = runtime.runner.agent
         self.env = env
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
