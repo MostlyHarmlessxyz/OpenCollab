@@ -244,13 +244,13 @@ class EnvCandidateWorkspace:
     async def _patch_paths(self, path: str) -> set[str]:
         result = await self._environment.exec_cmd(
             "git -C "
-            f"{shlex.quote(self._workspace)} apply --numstat -- {shlex.quote(path)}",
+            f"{shlex.quote(self._workspace)} apply --numstat -z -- {shlex.quote(path)}",
             timeout=30,
         )
         output = _complete(result, "candidate path inspection")
         return {
             line.split("\t", 2)[-1]
-            for line in output.splitlines()
+            for line in output.split("\0")
             if line.count("\t") >= 2
         }
 

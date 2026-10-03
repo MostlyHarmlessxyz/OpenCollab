@@ -392,9 +392,7 @@ async def test_candidate_capture_includes_committed_and_uncommitted_edits(tmp_pa
 
 
 @pytest.mark.parametrize("name", [
-    "protected.txt", "protected file.txt",
-    *[pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="OC-D07 Git quoted path is unmatched"))
-      for name in ["protected_数据.txt", "protected\tfile.txt"]],
+    "protected.txt", "protected file.txt", "protected_\u6570\u636e.txt", "protected\tfile.txt",
 ])
 @pytest.mark.asyncio
 async def test_candidate_adoption_preserves_git_quoted_file_paths(tmp_path, name):
