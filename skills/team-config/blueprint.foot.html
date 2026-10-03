@@ -113,12 +113,16 @@
   }
   function validate(t) {
     var issues = [], names = Object.keys(t.roles);
+    var needsRoleBudgets = t.budget == null && names.some(function (n) { return t.roles[n].budget != null; });
     if (t.entryExplicit != null && !t.roles[t.entryExplicit]) {
       issues.push({ level: "error", who: "entry", msg: "entry role '" + t.entryExplicit + "' is not declared in roles (" + JSON.stringify(names) + ")." });
     }
     if (!names.length) issues.push({ level: "warn", who: "roles", msg: "no roles declared — OpenCollab would fall back to a single default lead." });
     names.forEach(function (n) {
       var r = t.roles[n];
+      if (needsRoleBudgets && r.budget == null) {
+        issues.push({ level: "error", who: n, msg: "has no token budget while other roles do. Set budget.tokens at the team level or on this role." });
+      }
       if (!r.prompt && !r.promptFile) issues.push({ level: "error", who: n, msg: "must set 'prompt' or 'prompt_file'." });
       r.tools.forEach(function (tool) {
         if (catOf(tool) === "unknown") issues.push({ level: "error", who: n, msg: "unknown tool '" + tool + "'." });
