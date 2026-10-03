@@ -1,7 +1,5 @@
 """Public team metadata reports the entry seat before the remaining roles."""
 
-import pytest
-
 from opencollab.teams import (
     declared_role_names,
     declared_role_profiles,
@@ -10,7 +8,6 @@ from opencollab.teams import (
 )
 
 
-@pytest.mark.xfail(strict=True, reason="P3-03 public metadata ignores entry order")
 def test_public_team_helpers_put_entry_first_with_consistent_remaining_order(tmp_path):
     path = tmp_path / "team.yaml"
     path.write_text(
