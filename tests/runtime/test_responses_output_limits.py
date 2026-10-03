@@ -6,7 +6,6 @@ from opencollab.adapters.llm.responses_provider import _consume_stream, _parse_s
 from tests.support.responses_provider_test_support import FakeStream, completed_response, function_item, ns
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D04 legal output truncation is rejected")
 @pytest.mark.parametrize("streamed", [False, True])
 @pytest.mark.asyncio
 async def test_output_limit_keeps_usage_without_executing_partial_tool(streamed):

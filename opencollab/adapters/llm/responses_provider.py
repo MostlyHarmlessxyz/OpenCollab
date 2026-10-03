@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
-from opencollab.adapters.llm._responses_output import _function_call_identity as _function_call_identity
 from opencollab.adapters.llm._responses_output import (
     _merge_terminal_projection,
     _output_items_agree,
@@ -33,6 +31,9 @@ from opencollab.adapters.llm.responses_errors import (
 )
 from opencollab.adapters.llm.responses_messages import (
     OUTPUT_ITEM_TYPES as _OUTPUT_ITEM_TYPES,
+)
+from opencollab.adapters.llm.responses_messages import (
+    function_call_identity as _function_call_identity,
 )
 from opencollab.adapters.llm.responses_messages import (
     messages_to_input as _messages_to_input,
@@ -292,10 +293,14 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
         fragments = state.argument_fragments.pop(index, []) if isinstance(index, int) else []
         if fragments and "".join(fragments) != arguments:
             raise ResponsesProtocolError(f"function_call {call_id!r} argument fragments disagree")
-        try:
-            json.loads(arguments)
-        except (TypeError, ValueError) as exc:
-            raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ResponsesProtocolError(f"function_call {call_id!r} is missing name")
+        if item.get("status") != "incomplete":
+            try:
+                _function_call_identity(call_id, name, arguments)
+            except ResponsesProtocolError as exc:
+                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
     state.output_items.append(item)
 
 
@@ -416,7 +421,18 @@ async def _consume_stream(
             if asyncio.iscoroutine(result):
                 await result
     if state.argument_fragments:
-        raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
+        _, finish_reason = _validate_terminal_response(state.completed_response, expected_model)
+        output = _validated_response_items(to_plain_data(getattr(state.completed_response, "output", None)))
+        covered = finish_reason == "max_tokens" and all(
+            0 <= index < len(output)
+            and output[index].get("type") == "function_call"
+            and output[index].get("status") == "incomplete"
+            and output[index].get("arguments") == "".join(fragments)
+            for index, fragments in state.argument_fragments.items()
+        )
+        if not covered:
+            raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
+        state.argument_fragments.clear()
     return state
 
 
@@ -478,6 +494,21 @@ def _parse_stream(
         raise ResponsesProtocolError(f"JSON Schema tool response incomplete: {incomplete!r}")
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
+    interrupted_calls = any(
+        item.get("type") == "function_call" and item.get("status") == "incomplete"
+        for item in final_items
+    )
+    if interrupted_calls:
+        if finish_reason != "max_tokens":
+            raise ResponsesProtocolError("completed Responses output contains incomplete tool calls")
+        final_items = [
+            item for item in final_items
+            if item.get("type") != "function_call" or item.get("status") != "incomplete"
+        ]
+        state.output_items = [
+            item for item in state.output_items
+            if item.get("type") != "function_call" or item.get("status") != "incomplete"
+        ]
     output_mismatch = len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
@@ -531,7 +562,7 @@ def _parse_stream(
         state.output_items.append(synthetic_item)
         content = None
     content = rescue_empty_turn(content, tool_calls, reasoning)
-    if not content and not tool_calls:
+    if not content and not tool_calls and not interrupted_calls:
         raise ResponsesEmptyOutputError("response.completed contained no message or function call")
     return LLMResponse(
         content=content,
