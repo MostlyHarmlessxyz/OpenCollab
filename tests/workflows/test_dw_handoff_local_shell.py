@@ -81,8 +81,10 @@ async def test_explicit_permission_executes_commit_and_checkout_in_real_worktree
     )
 
     class LocalHandoffContext(RecordingContext):
-        environments = []
-        commit = None
+        def __init__(self):
+            super().__init__()
+            self.environments = []
+            self.commit = None
 
         async def agent(self, prompt, *, label, tools, isolation, **kwargs):
             assert isolation is True
@@ -98,10 +100,13 @@ async def test_explicit_permission_executes_commit_and_checkout_in_real_worktree
             if label.startswith("coder"):
                 await env.write_file("patch.txt", "delivered\n")
                 observed = await shell.execute_with_runtime(
-                    {"command": 'git add patch.txt && git -c user.name=Fixture -c user.email=fixture@example.test commit -qm patch && git rev-parse HEAD'},
+                    {"command": "git add patch.txt && git -c user.name=Fixture "
+                     "-c user.email=fixture@example.test commit -qm patch && git rev-parse HEAD"},
                     runtime,
                 )
-                self.commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=env.workspace, text=True).strip()
+                self.commit = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=env.workspace, text=True,
+                ).strip()
                 assert self.commit in observed, observed
                 return {"commit": self.commit, "summary": "fixture patch"}
             observed = await shell.execute_with_runtime({"command": f"git checkout -q {self.commit}"}, runtime)

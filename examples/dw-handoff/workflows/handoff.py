@@ -151,8 +151,8 @@ you found.
 """
 
 
-def _tools(role: str) -> list[Any]:
-    return list(builtin_tools(*ROLE_TOOLS[role]))
+def _tools(role: str, *, allow_unisolated_shell: bool = False) -> list[Any]:
+    return list(builtin_tools(*ROLE_TOOLS[role], headless=not allow_unisolated_shell))
 
 
 def _dump(value: Any) -> str:
@@ -168,13 +168,16 @@ async def dw_handoff(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, An
     goal = str(args.get("goal") or args.get("description") or "").strip()
     if not goal:
         return {"status": "error", "error": 'missing "goal"'}
+    allow_unisolated_shell = args.get("allow_unisolated_shell", False)
+    if not isinstance(allow_unisolated_shell, bool):
+        return {"status": "error", "error": "allow_unisolated_shell must be a boolean"}
 
     await ctx.phase("analyze")
     brief = await ctx.agent(
         ANALYST_PROMPT.format(rules=HANDOFF_RULES, goal=goal),
         schema=BRIEF_SCHEMA,
         label="analyst",
-        tools=_tools("analyst"),
+        tools=_tools("analyst", allow_unisolated_shell=allow_unisolated_shell),
         isolation=True,
     )
     if not isinstance(brief, dict):
@@ -193,7 +196,7 @@ async def dw_handoff(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, An
             ),
             schema=PATCH_SCHEMA,
             label=f"coder:{round_no}",
-            tools=_tools("coder"),
+            tools=_tools("coder", allow_unisolated_shell=allow_unisolated_shell),
             isolation=True,
         )
         if not isinstance(patch, dict):
@@ -211,7 +214,7 @@ async def dw_handoff(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, An
             ),
             schema=VERDICT_SCHEMA,
             label=f"tester:{round_no}",
-            tools=_tools("tester"),
+            tools=_tools("tester", allow_unisolated_shell=allow_unisolated_shell),
             isolation=True,
         )
         if not isinstance(verdict, dict):
