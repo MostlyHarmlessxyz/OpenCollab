@@ -225,3 +225,47 @@ def test_forced_overflow_summary_uses_the_same_usage_accounting():
     assert asyncio.run(session.run_loop()) == "answer"
     assert [call["summary"] for call in model.calls] == [False, True, False]
     assert session.used_tokens == 7_610
+
+
+@pytest.mark.parametrize("sibling_spends_during_summary", [False, True])
+@pytest.mark.parametrize("team_allowance", ["exhausted", "available", None])
+def test_answer_rechecks_shared_team_allowance_after_summary(
+    sibling_spends_during_summary, team_allowance,
+):
+    cap = (30 if sibling_spends_during_summary else 20) if team_allowance == "exhausted" else 1_000
+
+    def team_exhausted():
+        return session.used_tokens + sibling.used_tokens >= cap
+
+    guard = None if team_allowance is None else team_exhausted
+    sibling = build_session(
+        agent=Agent(name="sibling", system_prompt="system"),
+        llm=AccountingModel(summary_tokens=20), team_budget_exhausted=guard,
+    )
+
+    class SharedAccountingModel(AccountingModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            if sibling_spends_during_summary and "Your task is to create a detailed summary" in messages[-1]["content"]:
+                await sibling.add_user_message("Complete the independent task.")
+                assert await sibling.run_loop() == "answer"
+            return await super().complete(messages, tools, **kwargs)
+
+    model = SharedAccountingModel(summary_tokens=20)
+    session = build_session(
+        agent=Agent(name="team-summary", system_prompt="system"), llm=model,
+        max_budget_tokens=30_000, team_budget_exhausted=guard,
+    )
+    session.messages = history()
+    answer = asyncio.run(session.run_loop())
+    if team_allowance == "exhausted":
+        assert [call["summary"] for call in model.calls] == [True]
+        assert session.used_tokens == 20
+        assert answer == ""
+        assert session.phase is SessionPhase.STOPPED
+        assert "team budget exceeded" in session.state.terminal_reason
+    else:
+        assert [call["summary"] for call in model.calls] == [True, False]
+        assert session.used_tokens == 30
+        assert answer == "answer"
+        assert session.phase is SessionPhase.DONE
+    assert sibling.used_tokens == (10 if sibling_spends_during_summary else 0)
