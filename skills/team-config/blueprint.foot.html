@@ -68,6 +68,7 @@
         temperature: r.temperature != null ? r.temperature : null,
         thinking: r.thinking != null ? r.thinking : null,
         thinkingParams: r.thinking_params != null ? r.thinking_params : null,
+        profile: r.profile != null ? String(r.profile) : null,
         tools: Array.isArray(r.tools) ? r.tools.map(String) : []
       };
     });
@@ -86,7 +87,8 @@
       topology: topo,
       badTopo: badTopo,
       toolLimits: isMap(raw.tool_limits) ? raw.tool_limits : {},
-      hooks: isMap(raw.hooks) ? raw.hooks : {}
+      hooks: isMap(raw.hooks) ? raw.hooks : {},
+      context: raw.context != null ? raw.context : null
     };
   }
   function resolveEntry(explicit, roles) {
@@ -297,6 +299,7 @@
         + '<span class="tag">model <b>' + esc(r.model || "default") + "</b></span>"
         + '<span class="tag">temp <b>' + esc(r.temperature == null ? "inherit" : r.temperature) + "</b></span>"
         + (r.thinking != null ? '<span class="tag">thinking <b>' + esc(r.thinking) + "</b></span>" : "")
+        + (r.profile != null ? '<span class="tag">profile <b>' + esc(r.profile) + "</b></span>" : "")
         + (r.promptFile ? '<span class="tag">prompt_file <b>' + esc(r.promptFile) + "</b></span>" : "")
         + "</div>";
       var pv = r.prompt ? '<div class="prompt">' + esc(r.prompt) + "</div>" : (r.promptFile ? "" : '<div class="issue error" style="margin:0">no prompt or prompt_file</div>');
@@ -327,6 +330,7 @@
       if (r.temperature != null && r.temperature !== "") { var tn = +r.temperature; o.temperature = isFinite(tn) ? tn : r.temperature; }
       if (r.thinking != null) o.thinking = r.thinking;
       if (r.thinkingParams != null) o.thinking_params = r.thinkingParams;
+      if (r.profile != null) o.profile = r.profile;
       o.tools = r.tools.slice();
       if (r.prompt) o.prompt = r.prompt;
       else if (r.promptFile) o.prompt_file = r.promptFile;
@@ -337,6 +341,7 @@
     if (Object.keys(topo).length) out.topology = topo;
     if (Object.keys(t.toolLimits).length) out.tool_limits = t.toolLimits;
     if (Object.keys(t.hooks).length) out.hooks = t.hooks;
+    if (t.context != null) out.context = t.context;
     return out;
   }
   function toYaml(t) {
@@ -451,7 +456,7 @@
     if (act === "edit") { editMode = !editMode; render(); return; }
     if (act === "add-role") {
       var base = "role", n = base, i = 2; while (team.roles[n]) n = base + i++;
-      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, tools: [] };
+      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, profile: null, tools: [] };
       render(); return;
     }
     if (act === "copy-yaml") { copy(toYaml(team), el); return; }

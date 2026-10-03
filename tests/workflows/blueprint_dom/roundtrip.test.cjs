@@ -20,7 +20,7 @@ roles:
 topology:
   lead: [reviewer]
 tool_limits:
-  file_read: {max_output_chars: 5000}
+  file_read: {max_read_chars: 5000}
 hooks:
   Notification:
     - command: echo fixture
@@ -37,6 +37,9 @@ for (const context of [
     assert.deepEqual(exported.roles.lead, blueprint.original.roles.lead);
     assert.deepEqual(exported.roles.reviewer, blueprint.original.roles.reviewer);
     assert.deepEqual(exported.context, blueprint.original.context);
+    assert.deepEqual(exported.topology, blueprint.original.topology);
+    assert.deepEqual(exported.tool_limits, blueprint.original.tool_limits);
+    assert.deepEqual(exported.hooks, blueprint.original.hooks);
     assert.deepEqual(blueprint.resolvedConfig(blueprint.saveExport()), blueprint.resolvedConfig(blueprint.source));
 
     blueprint.click('[data-act="edit"]');
