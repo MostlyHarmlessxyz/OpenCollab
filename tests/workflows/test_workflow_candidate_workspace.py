@@ -698,3 +698,30 @@ async def test_candidate_workflow_source_drift_preserves_current_source_and_cand
     finally:
         for lease in leases:
             await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_dirty_candidate_capture_uses_contents_after_index_reset_and_commit(tmp_path):
+    repo = _repository(tmp_path)
+    (repo / "draft.txt").write_text("initial draft\n")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        candidate_repo = Path(lease.candidate_workspace)
+        _git(candidate_repo, "reset", "--mixed", "HEAD")
+        assert await lease.diff() == ""
+        await lease.environment.write_file("draft.txt", "initial draft\ncandidate addition\n")
+        await lease.environment.write_file("source.py", "value = 2\n")
+        _git(candidate_repo, "add", "source.py")
+        _git(candidate_repo, "-c", "commit.gpgsign=false", "commit", "-m", "candidate edit")
+        index_before = _git(candidate_repo, "ls-files", "--stage")
+        patch = await lease.diff()
+
+        assert patch.count("diff --git a/draft.txt b/draft.txt") == 1
+        assert "+candidate addition" in patch
+        assert _git(candidate_repo, "ls-files", "--stage") == index_before
+        await workspace.adopt(patch)
+        assert (repo / "draft.txt").read_text() == "initial draft\ncandidate addition\n"
+        assert (repo / "source.py").read_text() == "value = 2\n"
+    finally:
+        await lease.cleanup()
