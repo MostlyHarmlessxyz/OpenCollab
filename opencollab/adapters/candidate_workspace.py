@@ -49,6 +49,8 @@ async def _raw_diff_at(
     environment: Any,
     workspace: str,
     exclude_paths: Sequence[str] = (),
+    *,
+    base_revision: str = "HEAD",
 ) -> str:
     excluded = tuple(_safe_path(path) for path in exclude_paths)
     pathspec = ""
@@ -59,7 +61,7 @@ async def _raw_diff_at(
     tracked = _complete(
         await environment.exec_cmd(
             "git -C "
-            f"{shlex.quote(workspace)} --no-pager diff HEAD --binary --no-ext-diff"
+            f"{shlex.quote(workspace)} --no-pager diff {shlex.quote(base_revision)} --binary --no-ext-diff"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -97,6 +99,7 @@ class _CandidateLease:
     environment: Any
     source_workspace: str
     candidate_workspace: str
+    base_revision: str
     cleaned: bool = False
 
     async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
@@ -104,6 +107,7 @@ class _CandidateLease:
             self.base_environment,
             self.candidate_workspace,
             exclude_paths,
+            base_revision=self.base_revision,
         )
 
     async def cleanup(self) -> None:
@@ -152,10 +156,17 @@ class EnvCandidateWorkspace:
             os.rmdir(path)
         else:
             path = f"/tmp/opencollab-candidate-{token}"
+        base_revision = _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(self._workspace)} rev-parse --verify HEAD",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate base revision",
+        ).strip()
         result = await self._environment.exec_cmd(
             "git -C "
             f"{shlex.quote(self._workspace)} worktree add --detach -- "
-            f"{shlex.quote(path)} HEAD",
+            f"{shlex.quote(path)} {shlex.quote(base_revision)}",
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         )
         _complete(result, f"candidate worktree setup for {label}")
@@ -166,6 +177,7 @@ class EnvCandidateWorkspace:
             environment=environment,
             source_workspace=self._workspace,
             candidate_workspace=path,
+            base_revision=base_revision,
         )
 
     async def _write_patch(self, content: str, prefix: str) -> str:

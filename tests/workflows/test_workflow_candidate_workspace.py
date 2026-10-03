@@ -367,7 +367,6 @@ async def test_candidate_isolation_accepts_legacy_factory_signature(tmp_path, ne
     assert base.revoked is False
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D06 capture is relative to candidate HEAD")
 @pytest.mark.asyncio
 async def test_candidate_capture_includes_committed_and_uncommitted_edits(tmp_path):
     repo = _repository(tmp_path)
