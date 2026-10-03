@@ -29,6 +29,7 @@
   var app = document.getElementById("app");
   var team = null;      // normalized model
   var editMode = false;
+  var feedbackNotes = "";
 
   // The OpenCollab pentagon-ring mark, inlined (no external asset). Unique ids
   // ocg/occut so they never collide with the topology graph's markers (arr/arrL).
@@ -416,6 +417,7 @@
       + "</div></section>";
 
     app.innerHTML = html;
+    app.querySelector('[data-out="notes"]').value = feedbackNotes;
     refreshExport();
   }
 
@@ -499,6 +501,7 @@
 
   document.addEventListener("input", function (e) {
     var el = e.target, r;
+    if (el.getAttribute("data-out") === "notes") { feedbackNotes = el.value; return; }
     if (el.hasAttribute("data-prompt")) { r = team.roles[el.getAttribute("data-prompt")]; if (r) { r.prompt = el.value; r.promptFile = null; } refreshExport(); return; }
     if (el.hasAttribute("data-model")) { r = team.roles[el.getAttribute("data-model")]; if (r) r.model = el.value.trim() || null; refreshExport(); return; }
     if (el.hasAttribute("data-temp")) { r = team.roles[el.getAttribute("data-temp")]; if (r) { var v = el.value.trim(); r.temperature = v === "" ? null : (isNaN(+v) ? v : +v); } refreshExport(); return; }
