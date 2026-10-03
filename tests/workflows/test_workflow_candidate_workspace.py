@@ -269,3 +269,99 @@ async def test_candidate_source_changed_honors_excluded_paths(tmp_path, source_e
     candidate = await parent.candidate_workflow(nested, {}, label="candidate")
     assert candidate.output == {"all": True, "source": source_edit}
     assert "generated_test.py" in candidate.diff
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D02 isolation cleanup aborts candidate finalization")
+@pytest.mark.parametrize("failure_kind", ["close", "cleanup"])
+@pytest.mark.asyncio
+async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resources(tmp_path, monkeypatch, failure_kind):
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    built = []
+    fault = {"lease": None, "enabled": True}
+
+    class ClosingSession(FakeSession):
+        def __init__(self, environment):
+            super().__init__(tokens=3)
+            self.environment = environment
+            self.closes = 0
+
+        async def aclose(self):
+            self.closes += 1
+            if failure_kind == "close" and self.prompt == "first":
+                raise OSError("isolated close failed")
+
+    def build(**kwargs):
+        session = ClosingSession(kwargs["env"])
+        built.append(session)
+        return session
+
+    monkeypatch.setattr(runtime, "build_session", build)
+    factory = runtime.WorkflowSessionFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None, workspace=str(repo), env=base,
+    )
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+    source_owner = []
+
+    async def nested(child, _args):
+        await child.agent("first", isolation=True)
+        await child.agent("second", isolation=True)
+        owner, lease = factory._candidate_isolation_leases[0]
+        source_owner.append(owner)
+        if failure_kind == "cleanup":
+            fault["lease"] = lease
+            real_cleanup = type(lease).cleanup
+
+            async def cleanup(current):
+                if current is fault["lease"] and fault["enabled"]:
+                    raise OSError("isolated worktree cleanup failed")
+                await real_cleanup(current)
+
+            monkeypatch.setattr(type(lease), "cleanup", cleanup)
+        return "done"
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == "done"
+    assert candidate.lifecycle_errors
+    assert parent.tokens_spent() == 6
+    assert parent.tokens_remaining() == 94
+    assert parent.budget._leases == []
+    assert [session.closes for session in built] == [1, 1]
+    assert built[1].environment.revoked is True
+    assert base.revoked is False
+    if failure_kind == "cleanup":
+        assert len(factory._candidate_isolation_leases) == 1
+        assert source_owner[0].revoked is False
+        fault["enabled"] = False
+        await factory.release_isolated_envs()
+        await source_owner[0].cleanup()
+        _git(repo, "worktree", "remove", "--force", source_owner[0].workspace)
+    else:
+        assert factory._candidate_isolation_leases == []
+    assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+
+
+@pytest.mark.xfail(strict=True, reason="OC-D02 forwarding requires new factory keyword")
+@pytest.mark.parametrize("nested_wrapper", [False, True])
+@pytest.mark.asyncio
+async def test_candidate_isolation_accepts_legacy_factory_signature(tmp_path, nested_wrapper):
+    from opencollab.application.workflow_candidates import _CandidateWorkflowSessionFactory
+    from tests.support.workflow_context_test_support import FakeFactory, FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    legacy = FakeFactory([FakeSession(tokens=7)])
+    factory = _CandidateWorkflowSessionFactory(legacy, base) if nested_wrapper else legacy
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+
+    async def nested(child, _args):
+        return await child.agent("legacy isolation", isolation=True, label="scout")
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == "done"
+    assert parent.tokens_spent() == 7
+    assert parent.agent_failures == ()
+    assert base.revoked is False
