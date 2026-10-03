@@ -272,3 +272,146 @@ def test_responses_reasoning_family_keeps_known_context_window(model):
 
     assert capabilities.supports_responses_reasoning is True
     assert capabilities.context_window == 200_000
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-2025-08-07"])
+@pytest.mark.parametrize("effort", [None, "none", "high"])
+def test_native_gpt5_omits_unsupported_temperature(model, effort):
+    kwargs = _build_request_kwargs(
+        model, [{"role": "user", "content": "work"}], None, 0.2, reasoning_effort=effort,
+    )
+
+    assert "temperature" not in kwargs
+
+
+@pytest.mark.parametrize("model", [
+    "gpt-5.1", "gpt-5.2", "gpt-5.2-2025-12-11", "gpt-5.4", "gpt-5.4-2026-03-05",
+])
+@pytest.mark.parametrize("effort", [None, "none", "low", "high", "xhigh"])
+def test_native_gpt5_sampling_follows_effective_reasoning_effort(model, effort):
+    kwargs = _build_request_kwargs(
+        model, [{"role": "user", "content": "work"}], None, 0.2, reasoning_effort=effort,
+    )
+
+    if effort in (None, "none"):
+        assert kwargs["temperature"] == 0.2
+    else:
+        assert "temperature" not in kwargs
+
+
+@pytest.mark.parametrize("model,effort", [
+    ("gpt-5", None), ("gpt-5-mini", "high"), ("gpt-5.2", "high"),
+    ("gpt-5.4", "high"), ("gpt-5.4-2026-03-05", "high"),
+])
+def test_native_gpt5_rejects_explicit_unsupported_top_p(model, effort):
+    with pytest.raises(ResponsesProtocolError, match="does not support explicit top_p"):
+        _build_request_kwargs(
+            model, [{"role": "user", "content": "work"}], None, 0.2,
+            top_p=0.9, reasoning_effort=effort,
+        )
+
+
+@pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2", "gpt-5.4"])
+def test_native_gpt5_none_reasoning_accepts_explicit_top_p(model):
+    kwargs = _build_request_kwargs(
+        model, [{"role": "user", "content": "work"}], None, 0.2,
+        top_p=0.9, reasoning_effort="none",
+    )
+
+    assert kwargs["top_p"] == 0.9
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "gpt-5.2", "gpt-5.4", "vendor/gpt-5-mini"])
+def test_compatible_responses_provider_retains_its_sampling_parameters(model):
+    kwargs = _build_request_kwargs(
+        model, [{"role": "user", "content": "work"}], None, 0.2,
+        top_p=0.9, reasoning_effort="high", native_openai=False,
+    )
+
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["top_p"] == 0.9
+
+
+@pytest.mark.parametrize("provider,base_url,environment_url,native", [
+    ("openai", None, None, True),
+    (" OpenAI ", None, None, True),
+    ("openai", "https://api.openai.com/v1", None, True),
+    ("openai", "https://us.api.openai.com/v1", None, True),
+    ("openai", "https://eu.api.openai.com/v1", None, True),
+    ("openai", "https://au.api.openai.com/v1", None, True),
+    ("openai", "https://ca.api.openai.com/v1", None, True),
+    ("openai", "https://jp.api.openai.com/v1", None, True),
+    ("openai", "https://in.api.openai.com/v1", None, True),
+    ("openai", "https://sg.api.openai.com/v1", None, True),
+    ("openai", "https://kr.api.openai.com/v1", None, True),
+    ("openai", "https://gb.api.openai.com/v1", None, True),
+    ("openai", "https://ae.api.openai.com/v1", None, True),
+    ("openai", "https://gateway.example.invalid/v1", None, False),
+    ("openai", "https://custom.api.openai.com/v1", None, False),
+    ("openai", "https://eu.api.openai.com.example.invalid/v1", None, False),
+    ("openai", None, "https://gateway.example.invalid/v1", False),
+    ("openai", None, "https://eu.api.openai.com/v1", True),
+    ("openai", None, "https://api.openai.com/v1", True),
+    ("openai", "https://api.openai.com/v1", "https://gateway.example.invalid/v1", True),
+    ("custom", None, None, False),
+])
+async def test_responses_client_applies_native_rules_only_to_native_endpoint(
+    monkeypatch, provider, base_url, environment_url, native,
+):
+    from opencollab.adapters.llm import client as client_module
+    from tests.support.responses_provider_test_support import completed_response, message_item
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    if environment_url is not None:
+        monkeypatch.setenv("OPENAI_BASE_URL", environment_url)
+    client = client_module.LLMClient(
+        model="gpt-5", provider=provider, base_url=base_url, wire_protocol="responses",
+        api_key="fixture-key",  # pragma: allowlist secret
+    )
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+        return completed_response(model="gpt-5", output=[message_item("done")])
+
+    actual_complete = client_module.complete_responses
+
+    async def complete_without_stream(*args, **kwargs):
+        return await actual_complete(*args, **kwargs, stream=False)
+
+    monkeypatch.setattr(client._openai.responses, "create", create)
+    monkeypatch.setattr(client_module, "complete_responses", complete_without_stream)
+    try:
+        response = await client.complete([{"role": "user", "content": "work"}], temperature=0.2)
+    finally:
+        await client.close()
+
+    assert response.content == "done"
+    assert ("temperature" in requests[0]) is (not native)
+
+
+@pytest.mark.parametrize("base_url", ["https://us.api.openai.com/v1", "https://eu.api.openai.com/v1"])
+async def test_regional_responses_client_rejects_unsupported_top_p_before_request(monkeypatch, base_url):
+    from opencollab.adapters.llm.client import LLMClient
+
+    client = LLMClient(
+        model="gpt-5.2", provider="openai", base_url=base_url, wire_protocol="responses",
+        api_key="fixture-key",  # pragma: allowlist secret
+    )
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+        raise AssertionError("unsupported parameters reached the provider")
+
+    monkeypatch.setattr(client._openai.responses, "create", create)
+    try:
+        with pytest.raises(ResponsesProtocolError, match="does not support explicit top_p"):
+            await client.complete(
+                [{"role": "user", "content": "work"}], temperature=0.2,
+                top_p=0.9, reasoning_effort="high",
+            )
+    finally:
+        await client.close()
+
+    assert requests == []

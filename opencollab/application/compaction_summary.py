@@ -6,16 +6,8 @@ history layer. It is default-off until a ``SummarizerPort`` —
 callable, backed by the Claude Code-derived nine-section compaction prompt
 (``application/compaction_prompt.py``).
 
-The one friction it has to absorb: ``ShaperPort.shape`` is **sync**, but
-``LLMPort.complete`` is **async**, and shaping runs inside the already-running
-run-loop event loop. Nesting ``asyncio.run`` there is illegal, so the
-completion is driven on a dedicated worker thread with its own event loop. That
-blocks the calling loop for the duration of the (infrequent) summary call —
-acceptable, since a compaction is a synchronous checkpoint by nature.
-
-To avoid sharing an async HTTP client across event loops, the injected
-``acomplete`` is expected to build whatever client it needs *inside* the
-coroutine (see ``bootstrap/container.py``).
+Session execution awaits ``asummarize`` on its own event loop. The synchronous
+callable remains available to independent callers through a worker bridge.
 """
 
 from __future__ import annotations
@@ -24,6 +16,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable
 
+from opencollab.application._session_run_shared import GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application.compaction_prompt import (
     build_summary_request,
     format_compact_summary,
@@ -121,12 +114,17 @@ class ReadTimeSummarizer:
         return self._last_call_cacheable
 
     def __call__(self, segment: list[dict[str, Any]]) -> str:
+        return run_coro_blocking(lambda: self.asummarize(segment))
+
+    async def asummarize(self, segment: list[dict[str, Any]]) -> str:
         self._last_call_cacheable = False
         request = build_summary_request(segment, custom_instructions=self._custom_instructions)
         try:
-            response = run_coro_blocking(lambda: self._acomplete(request))
+            response = await self._acomplete(request)
             raw = getattr(response, "content", None) or ""
             summary = format_compact_summary(raw)
+        except (GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop):
+            raise
         except Exception:
             return self._fallback(segment)
 

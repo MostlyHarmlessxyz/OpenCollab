@@ -24,6 +24,10 @@ class _ContextOverflowStop(Exception):
     """
 
 
+class _TeamBudgetStop(Exception):
+    """Internal signal that shared team allowance ran out before a request."""
+
+
 class _TokenBudgetStop(Exception):
     """Internal signal that a request has no reserved output headroom."""
 

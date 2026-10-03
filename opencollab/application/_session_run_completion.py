@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from opencollab.application._session_run_shared import (
     _STRUCTURED_OUTPUT_TOOL,
@@ -15,13 +16,15 @@ from opencollab.application._session_run_shared import (
     _ContextOverflowStop,
     _request_tool_names,
     _submit_tool_choice,
+    _TeamBudgetStop,
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
+from opencollab.application._session_run_usage import _normalize_completion_usage
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse, RequestTokenEstimatorPort
-from opencollab.application.shaping import forced_shape
+from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
@@ -438,7 +441,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = self._shape_and_trace(self.state.messages)
+        messages = await self._shape_and_trace(self.state.messages)
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
@@ -457,7 +460,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        forced = forced_shape(self.shaper, self.state.messages) if self.shaper is not None else self.state.messages
+        forced = (
+            await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
+            if self.shaper is not None else self.state.messages
+        )
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -554,35 +560,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        configured_output_tokens = getattr(
-            self.agent,
-            "max_tokens_per_step",
-            DEFAULT_MAX_TOKENS_PER_STEP,
+        max_output_tokens = self._request_output_limit(
+            messages, tools, thinking=getattr(self.agent, "thinking", False)
         )
-        max_output_tokens = max(1, int(configured_output_tokens))
-        if self.max_budget_tokens is not None:
-            remaining_budget = int(self.max_budget_tokens) - int(
-                self.state.used_tokens
-            )
-            # The provider owns history adaptation, including thinking replay.
-            # Injected clients without that optional capability use the common
-            # estimate with all continuation fields included.
-            if isinstance(self.llm, RequestTokenEstimatorPort):
-                reserved_input_tokens = self.llm.estimate_request_tokens(
-                    messages,
-                    tools,
-                    thinking=getattr(self.agent, "thinking", False),
-                    thinking_params=getattr(self.agent, "thinking_params", None),
-                )
-            else:
-                reserved_input_tokens = estimate_request_tokens(messages, tools)
-            output_budget = remaining_budget - reserved_input_tokens
-            if output_budget < 1:
-                raise _TokenBudgetStop(
-                    reserved_input_tokens=reserved_input_tokens,
-                    remaining_budget=remaining_budget,
-                )
-            max_output_tokens = min(max_output_tokens, output_budget)
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
@@ -605,6 +585,99 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             thinking_params=getattr(self.agent, "thinking_params", None),
             **extra,
         )
+
+    def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
+        # Summary calls await provider work after PRECHECK. Their usage, or a
+        # sibling's concurrent usage, can exhaust the shared allowance meanwhile.
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            raise _TeamBudgetStop
+        configured_output_tokens = getattr(
+            self.agent,
+            "max_tokens_per_step",
+            DEFAULT_MAX_TOKENS_PER_STEP,
+        )
+        max_output_tokens = max(1, int(configured_output_tokens))
+        if self.max_budget_tokens is not None:
+            remaining_budget = int(self.max_budget_tokens) - int(
+                self.state.used_tokens
+            )
+            # The provider owns history adaptation, including thinking replay.
+            # Injected clients without that optional capability use the common
+            # estimate with all continuation fields included.
+            if isinstance(self.llm, RequestTokenEstimatorPort):
+                reserved_input_tokens = self.llm.estimate_request_tokens(
+                    messages,
+                    tools,
+                    thinking=thinking,
+                    thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+                )
+            else:
+                reserved_input_tokens = estimate_request_tokens(messages, tools)
+            output_budget = remaining_budget - reserved_input_tokens
+            if output_budget < 1:
+                raise _TokenBudgetStop(
+                    reserved_input_tokens=reserved_input_tokens,
+                    remaining_budget=remaining_budget,
+                )
+            max_output_tokens = min(max_output_tokens, output_budget)
+        return max_output_tokens
+
+    async def _invoke_summary(
+        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
+    ) -> CompletionResponse:
+        """Reserve, own and charge a summary call exactly once."""
+        max_output_tokens = self._request_output_limit(messages, None, thinking=False)
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
+            kwargs["max_output_tokens"] = max_output_tokens
+        start = time.monotonic()
+        protected_call = self.state.wind_down_done
+        abandoned = False
+        if self.tracer:
+            self.tracer.log_step(step_type="llm_call_started", payload={
+                "aid": self.state.aid, "purpose": "summary", "session_step": self.state.step_count,
+                "role": getattr(self.agent, "role", None) or getattr(self.agent, "label", None) or self.agent.model,
+                "response_session_id": self._response_session_id,
+            })
+
+        def account_response(response: CompletionResponse) -> None:
+            input_tokens, total_tokens = _normalize_completion_usage(response.usage)
+            self.state.add_used_tokens(total_tokens)
+            self._mark_budget_reserve_consumed(protected_call=protected_call)
+            self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
+            self.state.set_context_tokens(input_tokens)
+            if abandoned:
+                self._late_provider_usage += (total_tokens,)
+            self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
+
+        async def complete_owned() -> CompletionResponse:
+            try:
+                return await complete(messages, on_response=account_response, **kwargs)
+            finally:
+                self._draining_provider_tasks.discard(asyncio.current_task())
+
+        owner = asyncio.create_task(complete_owned())
+        self._track_provider_task(owner)
+        try:
+            if self._per_call_timeout is None:
+                await asyncio.wait({owner})
+                return owner.result()
+            return await abandon_on_timeout(
+                owner, self._per_call_timeout,
+                late_task_tracker=self._mark_provider_task_draining,
+                late_result_handler=self._provider_task_done,
+            )
+        except CallerTimeoutError as exc:
+            abandoned = True
+            raise GenerationTimeoutError(
+                f"LLM summary generation exceeded the {self._per_call_timeout}s per-call timeout"
+            ) from exc
+        except asyncio.CancelledError:
+            abandoned = True
+            if not owner.done():
+                if self._per_call_timeout is None:
+                    owner.cancel()
+                self._mark_provider_task_draining(owner)
+            raise
 
     async def _invoke_llm(self, **kwargs: Any) -> CompletionResponse:
         """Call the provider, bounding a single generation by ``_per_call_timeout``.

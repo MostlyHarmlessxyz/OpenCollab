@@ -286,24 +286,40 @@ def _is_responses_reasoning_family(model: str) -> bool:
 
 
 def _is_responses_sampling_restricted_family(model: str) -> bool:
-    """Return families known to reject Responses sampling controls.
-
-    GPT-5 variants support the Responses reasoning fields while retaining the
-    sampling controls used by the existing adapter contract.  The older o1/o3
-    reasoning families are the ones for which sampling is known to be
-    unsupported; keep that dimension independent from reasoning detection.
-    """
+    """Return provider-independent families with unsupported sampling controls."""
 
     leaf = model.strip().lower().rsplit("/", 1)[-1]
     return re.match(r"^o[134](?:$|[-.])", leaf) is not None
 
 
+def responses_sampling_supported(
+    model: str,
+    reasoning_effort: str | None = None,
+    *,
+    native_openai: bool = True,
+) -> bool:
+    """Resolve Responses sampling against the model, effort, and provider."""
+    if not model_capabilities(model).supports_responses_sampling:
+        return False
+    if not native_openai:
+        return True
+    # Only documented native IDs and their dated snapshots use these rules.
+    # Compatible providers retain the capabilities of their own endpoints.
+    dated = r"(?:-\d{4}-\d{2}-\d{2})?"
+    if re.fullmatch(rf"gpt-5(?:-mini|-nano)?{dated}", model):
+        return False
+    # GPT-5.1, GPT-5.2, and GPT-5.4 all document none as their default effort.
+    if re.fullmatch(rf"gpt-5\.(?:1|2|4){dated}", model):
+        return reasoning_effort in (None, "none")
+    return True
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
     """Return exact capability metadata plus a best-effort context window.
 
-    Capability dimensions are intentionally independent.  Known ``o1``/``o3``
-    /``o4`` families fail closed for sampling while GPT-5 variants retain the
-    existing sampling contract even though they opt in to Responses reasoning.
+    Capability dimensions are intentionally independent. Known ``o1``/``o3``
+    /``o4`` families reject sampling. Native GPT-5 sampling additionally depends
+    on the precise model and effort through ``responses_sampling_supported``.
     Streaming and function-tool support stay at their neutral defaults until a
     provider contract explicitly confirms them; an unknown dimension must not
     be inferred from reasoning support.

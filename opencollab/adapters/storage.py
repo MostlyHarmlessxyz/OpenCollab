@@ -591,7 +591,7 @@ class SessionStore:
         except UnicodeDecodeError as exc:
             raise ValueError("Invalid autosave journal: non-UTF-8 record") from exc
         records: list[dict[str, Any]] = []
-        for lineno, line in enumerate(complete.splitlines(), 1):
+        for lineno, line in enumerate(complete.split("\n"), 1):
             if not line:
                 continue
             try:
@@ -675,7 +675,7 @@ class SessionStore:
     @staticmethod
     def _parse_jsonl(text: str) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-        for line in text.splitlines():
+        for line in text.split("\n"):
             line = line.strip()
             if line:
                 messages.append(json.loads(line))

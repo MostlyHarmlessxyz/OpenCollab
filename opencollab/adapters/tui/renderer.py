@@ -66,6 +66,7 @@ class _AgentRenderState:
     """
 
     current_text: str = ""
+    turn_has_text: bool = False
     active_tools: dict[str, dict] = field(default_factory=dict)
     status_lines: list[Text] = field(default_factory=list)
     history_blocks: list[Any] = field(default_factory=list)
@@ -121,8 +122,8 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         # configured "available" roles). When set, the team panel renders from
         # it so the roster stays visible during a turn, not only after a spawn.
         self._team_provider: Any | None = None
-        # Agents whose trailing streamed text the last ``settle_turn()``
-        # committed to scrollback, so a failed turn is not reported twice.
+        # Agents whose streamed text reached scrollback during the last turn,
+        # including text settled early by a tool or preserved status event.
         self._drained_partial_aids: frozenset[int] = frozenset()
 
     def _state_for(self, aid: int) -> _AgentRenderState:
@@ -528,7 +529,6 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         could Tab back to it. Its tail is flushed even if focus wandered off to
         a teammate.
         """
-        streaming = {aid for aid, state in self._agent_states.items() if state.current_text}
         for state in self._agent_states.values():
             self._flush_current_text_to_timeline(state)
             state.status_lines.clear()
@@ -537,12 +537,15 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         if final_aid is not None:
             self._drain_agent_tail(final_aid)
         self._drained_partial_aids = frozenset(
-            aid for aid in streaming if self._fully_printed(aid)
+            aid for aid, state in self._agent_states.items()
+            if state.turn_has_text and self._fully_printed(aid)
         )
+        for state in self._agent_states.values():
+            state.turn_has_text = False
         self._refresh()
 
     def drained_partial_answer(self, aid: int) -> bool:
-        """Did the last ``settle_turn()`` commit this agent's trailing text?
+        """Did this agent's text reach scrollback by the last ``settle_turn()``?
 
         A turn that ends in ``SchedulerTurnError`` carries the half-finished
         answer as ``partial_answer``, and the CLI used to print it because the

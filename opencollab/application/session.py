@@ -4,6 +4,7 @@ import asyncio
 import copy
 import inspect
 import os
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -88,7 +89,7 @@ class Session:
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
     ):
-        self.agent = agent
+        self.agent = runtime.runner.agent
         self.env = env
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
@@ -120,6 +121,8 @@ class Session:
         self._auto_save_sequence = 0
         self._auto_save_message_count = 0
         self._auto_save_rewrite_from: int | None = 0
+        self._auto_save_rewrite_revision = 0
+        self._auto_save_rewrite_lock = threading.Lock()
         self._auto_save_seen_result_hashes: set[str] = set()
         self._next_auto_save_checkpoint = 1
         self._loop_checkpoint_results: list[dict] = []
@@ -239,7 +242,9 @@ class Session:
     def messages(self, value: list[dict]) -> None:
         self.state.replace_messages(value)
         if hasattr(self, "_auto_save_rewrite_from"):
-            self._auto_save_rewrite_from = 0
+            with self._auto_save_rewrite_lock:
+                self._auto_save_rewrite_from = 0
+                self._auto_save_rewrite_revision += 1
 
     @property
     def used_tokens(self) -> int:
@@ -795,8 +800,10 @@ class Session:
             # user message, so retain one-message overlap without re-copying
             # the complete transcript.
             replace_from -= 1
-        if self._auto_save_rewrite_from is not None:
-            replace_from = min(replace_from, self._auto_save_rewrite_from)
+        with self._auto_save_rewrite_lock:
+            rewrite_revision = self._auto_save_rewrite_revision
+            if self._auto_save_rewrite_from is not None:
+                replace_from = min(replace_from, self._auto_save_rewrite_from)
         messages, meta = self._snapshot_for_save(replace_from)
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = not self._auto_save_seen_result_hashes.issubset(
@@ -829,7 +836,9 @@ class Session:
             # cannot cause the durable delta to be skipped on the next save.
             self._auto_save_sequence = sequence
             self._auto_save_message_count = message_count
-            self._auto_save_rewrite_from = None
+            with self._auto_save_rewrite_lock:
+                if self._auto_save_rewrite_revision == rewrite_revision:
+                    self._auto_save_rewrite_from = None
             self._auto_save_seen_result_hashes = current_seen_hashes
             if checkpoint_messages is not None:
                 self.store.checkpoint_snapshot(

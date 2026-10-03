@@ -247,7 +247,9 @@ def _responses_client(model: str, create) -> LLMClient:
         base_url="http://fake.invalid/v1",
         wire_protocol="responses",
     )
-    client._openai = SimpleNamespace(responses=SimpleNamespace(create=create))
+    client._openai = SimpleNamespace(
+        base_url="http://fake.invalid/v1", responses=SimpleNamespace(create=create),
+    )
     return client
 
 

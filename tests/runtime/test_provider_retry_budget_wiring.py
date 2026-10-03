@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,7 +25,9 @@ class _FakeLLM:
 
 
 def test_llm_client_keeps_legacy_positional_context_window(monkeypatch):
-    monkeypatch.setattr(client_module.openai, "AsyncOpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        client_module.openai, "AsyncOpenAI", lambda **_kwargs: SimpleNamespace(base_url="https://api.openai.com/v1"),
+    )
 
     client = LLMClient(
         "model",
@@ -110,7 +113,9 @@ async def test_all_provider_paths_receive_the_shared_retry_budget(monkeypatch, m
     async def skip_usage(**_kwargs):
         return None
 
-    monkeypatch.setattr(client_module.openai, "AsyncOpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        client_module.openai, "AsyncOpenAI", lambda **_kwargs: SimpleNamespace(base_url="https://api.openai.com/v1"),
+    )
     monkeypatch.setattr(client_module, "complete_openai", fake_complete)
     monkeypatch.setattr(client_module, "complete_responses", fake_complete)
     monkeypatch.setattr(client_module, "complete_anthropic", fake_complete)

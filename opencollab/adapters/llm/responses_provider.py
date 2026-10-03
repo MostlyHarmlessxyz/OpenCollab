@@ -59,6 +59,7 @@ from opencollab.adapters.llm.types import (
     ModelCapabilities,
     model_capabilities,
     rescue_empty_turn,
+    responses_sampling_supported,
     to_plain_data,
 )
 
@@ -172,6 +173,7 @@ def _build_request_kwargs(
     reasoning_effort: str | None = None,
     prompt_cache_namespace: str | None = None,
     response_session_id: str | None = None,
+    native_openai: bool = True,
 ) -> dict[str, Any]:
     instructions, input_items = _messages_to_input(messages)
     if not input_items:
@@ -185,7 +187,7 @@ def _build_request_kwargs(
     }
     if capabilities.supports_responses_reasoning:
         kwargs["include"] = ["reasoning.encrypted_content"]
-    if capabilities.supports_responses_sampling:
+    if responses_sampling_supported(model, reasoning_effort, native_openai=native_openai):
         kwargs["temperature"] = temperature
     elif top_p is not None:
         raise ResponsesProtocolError(f"model {model!r} does not support explicit top_p")
@@ -621,6 +623,7 @@ async def complete_responses(
     reasoning_effort: str | None = None,
     prompt_cache_namespace: str | None = None,
     response_session_id: str | None = None,
+    native_openai: bool = True,
     first_event_timeout: float | None = 180.0,
     stream_idle_timeout: float | None = 180.0,
     round_timeout: float | None = None,
@@ -644,6 +647,7 @@ async def complete_responses(
         reasoning_effort=reasoning_effort,
         prompt_cache_namespace=prompt_cache_namespace,
         response_session_id=response_session_id,
+        native_openai=native_openai,
     )
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming

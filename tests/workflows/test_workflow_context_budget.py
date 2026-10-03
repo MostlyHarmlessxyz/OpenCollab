@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import time
 from typing import Any
 
 import pytest
@@ -28,6 +29,10 @@ from tests.support.workflow_context_test_support import (
 # rather than the code, and reports work that finished as a red build. The
 # waits meant to EXPIRE keep their own small timeouts.
 MUST_SETTLE_SECONDS = 10.0
+
+# These cleanup scenarios need a running session before its real caller
+# deadline expires. Short preparation deadlines are exercised separately.
+CANCEL_CLEANUP_CALLER_TIMEOUT_SECONDS = 0.5
 
 # The deadline test below hands the synth a caller deadline and checks that the
 # synth is bounded by it. A millisecond deadline cannot do that: it can expire
@@ -225,41 +230,104 @@ async def test_timeout_keeps_budget_reserved_until_cancel_cleanup_finishes():
     second = FakeSession(reply="second", gate=second_gate)
     factory = FakeFactory([timed_out, second])
     ctx = WorkflowContext(factory, budget_total=100, max_concurrency=2)
+    first_task = asyncio.create_task(ctx.agent(
+        "slow", budget=80, timeout=CANCEL_CLEANUP_CALLER_TIMEOUT_SECONDS,
+    ))
+    owners = [first_task]
+    try:
+        await asyncio.wait_for(timed_out.started.wait(), timeout=MUST_SETTLE_SECONDS)
+        assert await asyncio.wait_for(first_task, timeout=MUST_SETTLE_SECONDS) is None
+        await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
 
-    assert await ctx.agent("slow", budget=80, timeout=0.05) is None
-    await timed_out.cancel_seen.wait()
+        second_task = asyncio.create_task(ctx.agent("second", budget=80))
+        owners.append(second_task)
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if len(factory.builds) == 2:
+                break
 
-    second_task = asyncio.create_task(ctx.agent("second", budget=80))
-    for _ in range(20):
-        await asyncio.sleep(0)
-        if len(factory.builds) == 2:
-            break
-
-    assert factory.builds[1]["budget"] == 20
-    timed_out.release_cancel.set()
-    second_gate.set()
-    assert await second_task == "second"
-    for _ in range(20):
-        await asyncio.sleep(0)
-        if ctx.budget.spent() == 80:
-            break
+        assert factory.builds[1]["budget"] == 20
+        timed_out.release_cancel.set()
+        second_gate.set()
+        assert await asyncio.wait_for(second_task, timeout=MUST_SETTLE_SECONDS) == "second"
+    finally:
+        timed_out.release_cancel.set()
+        second_gate.set()
+        if not first_task.done():
+            first_task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(*owners, return_exceptions=True),
+            timeout=MUST_SETTLE_SECONDS,
+        )
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
     assert ctx.budget.spent() == 80
+
 
 @pytest.mark.asyncio
 async def test_pending_cleanup_wait_covers_unreserved_over_budget_lease():
     timed_out = CancelCleanupSession(tokens_after_cancel=0)
     ctx = WorkflowContext(FakeFactory([timed_out]), budget_total=0)
+    call = asyncio.create_task(ctx.agent(
+        "forced", timeout=CANCEL_CLEANUP_CALLER_TIMEOUT_SECONDS, over_budget_ok=True,
+    ))
+    owners = [call]
+    try:
+        await asyncio.wait_for(timed_out.started.wait(), timeout=MUST_SETTLE_SECONDS)
+        assert await asyncio.wait_for(call, timeout=MUST_SETTLE_SECONDS) is None
+        await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
 
-    assert (
-        await ctx.agent("forced", timeout=0.05, over_budget_ok=True) is None
-    )
-    await timed_out.cancel_seen.wait()
+        waiter = asyncio.create_task(ctx.wait_for_pending_cleanup())
+        owners.append(waiter)
+        await asyncio.sleep(0)
+        assert waiter.done() is False
+        timed_out.release_cancel.set()
+        await asyncio.wait_for(waiter, timeout=MUST_SETTLE_SECONDS)
+    finally:
+        timed_out.release_cancel.set()
+        if not call.done():
+            call.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(*owners, return_exceptions=True),
+            timeout=MUST_SETTLE_SECONDS,
+        )
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
 
-    waiter = asyncio.create_task(ctx.wait_for_pending_cleanup())
-    await asyncio.sleep(0)
-    assert waiter.done() is False
-    timed_out.release_cancel.set()
-    await waiter
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["build", "prepare"])
+@pytest.mark.parametrize("over_budget", [False, True])
+async def test_preparation_deadline_stops_before_run_loop_and_returns_budget(stage, over_budget):
+    class SlowPreparationSession(CancelCleanupSession):
+        async def add_user_message(self, prompt):
+            if stage == "prepare":
+                await asyncio.sleep(0.08)
+            await super().add_user_message(prompt)
+
+    class SlowFactory(FakeFactory):
+        def build_workflow_session(self, **kwargs):
+            if stage == "build":
+                time.sleep(0.08)
+            return super().build_workflow_session(**kwargs)
+
+    session = SlowPreparationSession()
+    total = 0 if over_budget else 100
+    ctx = WorkflowContext(SlowFactory([session]), budget_total=total)
+    try:
+        assert await asyncio.wait_for(
+            ctx.agent("preparation", timeout=0.05, budget=None if over_budget else 80,
+                      over_budget_ok=over_budget),
+            timeout=MUST_SETTLE_SECONDS,
+        ) is None
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
+        assert session.started.is_set() is False
+        assert session.cancel_seen.is_set() is False
+        assert ctx.pending_cleanup_tasks == ()
+        assert ctx.budget._leases == []
+        assert ctx.budget.spent() == 0
+        assert ctx.budget.remaining() == total
+    finally:
+        session.release_cancel.set()
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -326,18 +394,33 @@ async def test_timeout_keeps_concurrency_slot_until_cancel_cleanup_finishes():
     factory = FakeFactory([timed_out, second])
     ctx = WorkflowContext(factory, max_concurrency=1)
 
-    assert await ctx.agent("slow", timeout=0.05) is None
-    await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
+    first_task = asyncio.create_task(ctx.agent("slow", timeout=CANCEL_CLEANUP_CALLER_TIMEOUT_SECONDS))
+    owners = [first_task]
+    try:
+        await asyncio.wait_for(timed_out.started.wait(), timeout=MUST_SETTLE_SECONDS)
+        assert await asyncio.wait_for(first_task, timeout=MUST_SETTLE_SECONDS) is None
+        await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
 
-    second_task = asyncio.create_task(ctx.agent("second"))
-    for _ in range(20):
-        await asyncio.sleep(0)
-    assert len(factory.builds) == 1
-    assert second_task.done() is False
+        second_task = asyncio.create_task(ctx.agent("second"))
+        owners.append(second_task)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert len(factory.builds) == 1
+        assert second_task.done() is False
 
-    timed_out.release_cancel.set()
-    assert await asyncio.wait_for(second_task, timeout=MUST_SETTLE_SECONDS) == "second"
-    assert overlapped is False
+        timed_out.release_cancel.set()
+        assert await asyncio.wait_for(second_task, timeout=MUST_SETTLE_SECONDS) == "second"
+        assert overlapped is False
+    finally:
+        timed_out.release_cancel.set()
+        if not first_task.done():
+            first_task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(*owners, return_exceptions=True),
+            timeout=MUST_SETTLE_SECONDS,
+        )
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
+
 
 @pytest.mark.asyncio
 async def test_active_background_agent_is_visible_to_boundary_owner():
@@ -409,17 +492,21 @@ async def test_enforced_timeout_does_not_start_synth_while_scout_cleans_up():
     factory = FakeFactory([timed_out, synth])
     ctx = WorkflowContext(factory, max_concurrency=1)
 
-    result = await ctx.agent(
-        "scout",
-        timeout=0.05,
-        enforcement_strength=ENFORCEMENT_ON,
-    )
-
-    assert result is not None and "evidence cards" in result
-    assert len(factory.builds) == 1
-    await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
-    timed_out.release_cancel.set()
-    await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
+    call = asyncio.create_task(ctx.agent(
+        "scout", timeout=CANCEL_CLEANUP_CALLER_TIMEOUT_SECONDS, enforcement_strength=ENFORCEMENT_ON,
+    ))
+    try:
+        await asyncio.wait_for(timed_out.started.wait(), timeout=MUST_SETTLE_SECONDS)
+        result = await asyncio.wait_for(call, timeout=MUST_SETTLE_SECONDS)
+        assert result is not None and "evidence cards" in result
+        assert len(factory.builds) == 1
+        await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
+    finally:
+        timed_out.release_cancel.set()
+        if not call.done():
+            call.cancel()
+        await asyncio.wait_for(asyncio.gather(call, return_exceptions=True), timeout=MUST_SETTLE_SECONDS)
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
 
 
 @pytest.mark.asyncio

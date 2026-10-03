@@ -627,6 +627,11 @@ class DockerEnvironment(Environment):
             'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
             'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
             '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && ' + comparison +
+            # Read the mode only from a regular target. Replacing a symlink
+            # keeps the new-file mode and leaves its referent untouched.
+            '{ if [ -f "$target" ] && [ ! -L "$target" ]; then '
+            'mode=$(stat -c %a -- "$target" 2>/dev/null || stat -f %Lp -- "$target") && '
+            'chmod -- "$mode" "$temporary"; else :; fi; } && '
             'mv -f -- "$temporary" "$target" && '
             'trap - EXIT HUP INT TERM && ' + confirmation
         )

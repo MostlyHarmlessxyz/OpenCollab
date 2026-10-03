@@ -26,6 +26,7 @@ from opencollab.application._session_run_shared import (
     PendingStep,
     _ContextOverflowStop,
     _submit_tool_choice,
+    _TeamBudgetStop,
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_usage import _normalize_completion_usage
@@ -722,6 +723,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             return
         except _ContextOverflowStop:
             await self._stop_on_context_overflow()
+            return
+        except _TeamBudgetStop:
+            await self._stop_precheck("team budget exceeded: aggregate spend reached the global cap")
             return
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)

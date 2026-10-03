@@ -29,6 +29,7 @@
   var app = document.getElementById("app");
   var team = null;      // normalized model
   var editMode = false;
+  var feedbackNotes = "";
 
   // The OpenCollab pentagon-ring mark, inlined (no external asset). Unique ids
   // ocg/occut so they never collide with the topology graph's markers (arr/arrL).
@@ -68,6 +69,8 @@
         temperature: r.temperature != null ? r.temperature : null,
         thinking: r.thinking != null ? r.thinking : null,
         thinkingParams: r.thinking_params != null ? r.thinking_params : null,
+        profile: r.profile != null ? String(r.profile) : null,
+        budget: r.budget != null ? r.budget : null,
         tools: Array.isArray(r.tools) ? r.tools.map(String) : []
       };
     });
@@ -86,7 +89,9 @@
       topology: topo,
       badTopo: badTopo,
       toolLimits: isMap(raw.tool_limits) ? raw.tool_limits : {},
-      hooks: isMap(raw.hooks) ? raw.hooks : {}
+      hooks: isMap(raw.hooks) ? raw.hooks : {},
+      context: raw.context != null ? raw.context : null,
+      budget: raw.budget != null ? raw.budget : null
     };
   }
   function resolveEntry(explicit, roles) {
@@ -108,12 +113,16 @@
   }
   function validate(t) {
     var issues = [], names = Object.keys(t.roles);
+    var needsRoleBudgets = t.budget == null && names.some(function (n) { return t.roles[n].budget != null; });
     if (t.entryExplicit != null && !t.roles[t.entryExplicit]) {
       issues.push({ level: "error", who: "entry", msg: "entry role '" + t.entryExplicit + "' is not declared in roles (" + JSON.stringify(names) + ")." });
     }
     if (!names.length) issues.push({ level: "warn", who: "roles", msg: "no roles declared — OpenCollab would fall back to a single default lead." });
     names.forEach(function (n) {
       var r = t.roles[n];
+      if (needsRoleBudgets && r.budget == null) {
+        issues.push({ level: "error", who: n, msg: "has no token budget while other roles do. Set budget.tokens at the team level or on this role." });
+      }
       if (!r.prompt && !r.promptFile) issues.push({ level: "error", who: n, msg: "must set 'prompt' or 'prompt_file'." });
       r.tools.forEach(function (tool) {
         if (catOf(tool) === "unknown") issues.push({ level: "error", who: n, msg: "unknown tool '" + tool + "'." });
@@ -297,6 +306,7 @@
         + '<span class="tag">model <b>' + esc(r.model || "default") + "</b></span>"
         + '<span class="tag">temp <b>' + esc(r.temperature == null ? "inherit" : r.temperature) + "</b></span>"
         + (r.thinking != null ? '<span class="tag">thinking <b>' + esc(r.thinking) + "</b></span>" : "")
+        + (r.profile != null ? '<span class="tag">profile <b>' + esc(r.profile) + "</b></span>" : "")
         + (r.promptFile ? '<span class="tag">prompt_file <b>' + esc(r.promptFile) + "</b></span>" : "")
         + "</div>";
       var pv = r.prompt ? '<div class="prompt">' + esc(r.prompt) + "</div>" : (r.promptFile ? "" : '<div class="issue error" style="margin:0">no prompt or prompt_file</div>');
@@ -327,6 +337,8 @@
       if (r.temperature != null && r.temperature !== "") { var tn = +r.temperature; o.temperature = isFinite(tn) ? tn : r.temperature; }
       if (r.thinking != null) o.thinking = r.thinking;
       if (r.thinkingParams != null) o.thinking_params = r.thinkingParams;
+      if (r.profile != null) o.profile = r.profile;
+      if (r.budget != null) o.budget = r.budget;
       o.tools = r.tools.slice();
       if (r.prompt) o.prompt = r.prompt;
       else if (r.promptFile) o.prompt_file = r.promptFile;
@@ -337,6 +349,8 @@
     if (Object.keys(topo).length) out.topology = topo;
     if (Object.keys(t.toolLimits).length) out.tool_limits = t.toolLimits;
     if (Object.keys(t.hooks).length) out.hooks = t.hooks;
+    if (t.context != null) out.context = t.context;
+    if (t.budget != null) out.budget = t.budget;
     return out;
   }
   function toYaml(t) {
@@ -411,6 +425,7 @@
       + "</div></section>";
 
     app.innerHTML = html;
+    app.querySelector('[data-out="notes"]').value = feedbackNotes;
     refreshExport();
   }
 
@@ -451,7 +466,7 @@
     if (act === "edit") { editMode = !editMode; render(); return; }
     if (act === "add-role") {
       var base = "role", n = base, i = 2; while (team.roles[n]) n = base + i++;
-      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, tools: [] };
+      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, profile: null, budget: null, tools: [] };
       render(); return;
     }
     if (act === "copy-yaml") { copy(toYaml(team), el); return; }
@@ -494,6 +509,7 @@
 
   document.addEventListener("input", function (e) {
     var el = e.target, r;
+    if (el.getAttribute("data-out") === "notes") { feedbackNotes = el.value; return; }
     if (el.hasAttribute("data-prompt")) { r = team.roles[el.getAttribute("data-prompt")]; if (r) { r.prompt = el.value; r.promptFile = null; } refreshExport(); return; }
     if (el.hasAttribute("data-model")) { r = team.roles[el.getAttribute("data-model")]; if (r) r.model = el.value.trim() || null; refreshExport(); return; }
     if (el.hasAttribute("data-temp")) { r = team.roles[el.getAttribute("data-temp")]; if (r) { var v = el.value.trim(); r.temperature = v === "" ? null : (isNaN(+v) ? v : +v); } refreshExport(); return; }

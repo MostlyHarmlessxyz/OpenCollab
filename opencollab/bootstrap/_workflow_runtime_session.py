@@ -197,14 +197,7 @@ class WorkflowSessionFactory:
         """
         if environment is not None:
             workspace = EnvCandidateWorkspace(environment)
-            snapshot = await workspace.source_diff()
             lease = await workspace.acquire(label or "workflow-agent")
-            try:
-                if snapshot.strip():
-                    await EnvCandidateWorkspace(lease.environment).adopt(snapshot)
-            except BaseException:
-                await lease.cleanup()
-                raise
             self._candidate_isolation_leases.append((environment, lease))
             return lease.environment
         if self._worktree_pool is None:
