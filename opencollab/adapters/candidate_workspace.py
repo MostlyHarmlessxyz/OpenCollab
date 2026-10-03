@@ -49,6 +49,7 @@ async def _candidate_temporary(
     *,
     prefix: str,
     suffix: str = ".tmp",
+    cleanup_best_effort: bool = False,
 ) -> AsyncIterator[str]:
     if isinstance(environment, LocalEnvironment):
         git_directory = _complete(
@@ -65,13 +66,21 @@ async def _candidate_temporary(
             try:
                 yield await owner.write_temp_file(content, prefix=prefix, suffix=suffix)
             finally:
-                await await_owned_operation(owner.cleanup(), propagate_cancellation=True)
+                try:
+                    await await_owned_operation(owner.cleanup(), propagate_cancellation=True)
+                except Exception:
+                    if not cleanup_best_effort:
+                        raise
     else:
         path = await environment.write_temp_file(content, prefix=prefix, suffix=suffix)
         try:
             yield path
         finally:
-            await await_owned_operation(environment.remove_file(path), propagate_cancellation=True)
+            try:
+                await await_owned_operation(environment.remove_file(path), propagate_cancellation=True)
+            except Exception:
+                if not cleanup_best_effort:
+                    raise
 
 
 async def _raw_diff(environment: Any, exclude_paths: Sequence[str] = ()) -> str:
@@ -322,11 +331,11 @@ class EnvCandidateWorkspace:
         current = await _raw_diff_at(self._environment, self._workspace)
         async with _candidate_temporary(
             self._environment, self._workspace, current,
-            prefix=".candidate-current-", suffix=".patch",
+            prefix=".candidate-current-", suffix=".patch", cleanup_best_effort=True,
         ) as current_file:
             async with _candidate_temporary(
                 self._environment, self._workspace, patch,
-                prefix=".candidate-target-", suffix=".patch",
+                prefix=".candidate-target-", suffix=".patch", cleanup_best_effort=True,
             ) as target_file:
                 reversed_current = False
                 try:
@@ -385,7 +394,7 @@ class EnvCandidateWorkspace:
         preserved = tuple(_safe_path(path) for path in preserve_paths)
         async with _candidate_temporary(
             self._environment, self._workspace, patch,
-            prefix=".candidate-adopt-", suffix=".patch",
+            prefix=".candidate-adopt-", suffix=".patch", cleanup_best_effort=True,
         ) as candidate_file:
             candidate_paths = await self._patch_paths(candidate_file)
             candidate_paths.update(patch_paths(patch))

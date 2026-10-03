@@ -150,3 +150,41 @@ async def test_internal_candidate_materials_do_not_enter_source_snapshot(
             _git(main, "worktree", "remove", "--force", str(repo))
     assert all(not path.exists() for path in temporary_paths)
     assert all(not path.parent.exists() for path in temporary_paths)
+
+
+@pytest.mark.parametrize("operation", ["adopt", "restore"])
+@pytest.mark.parametrize("invalid_patch", [False, True])
+async def test_patch_cleanup_error_preserves_original_outcome(monkeypatch, tmp_path, operation, invalid_patch):
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(base)
+    lease = await workspace.acquire("prepare-patch")
+    await lease.environment.write_file("source.py", "value = 2\n")
+    patch = await lease.diff()
+    await lease.cleanup()
+    if operation == "restore":
+        (repo / "source.py").write_text("value = 3\n")
+    original_cleanup = LocalEnvironment.cleanup
+    cleanup_errors = []
+
+    async def cleanup_then_fail(owner):
+        await original_cleanup(owner)
+        if owner is not base:
+            cleanup_errors.append(owner.workspace)
+            raise OSError("temporary cleanup failed")
+
+    monkeypatch.setattr(LocalEnvironment, "cleanup", cleanup_then_fail)
+    try:
+        method = workspace.adopt if operation == "adopt" else workspace.restore_source
+        if invalid_patch:
+            with pytest.raises(RuntimeError, match="candidate (path inspection|source restoration) failed"):
+                await method("invalid patch\n")
+            expected = "value = 1\n" if operation == "adopt" else "value = 3\n"
+        else:
+            await method(patch)
+            expected = "value = 2\n"
+        assert (repo / "source.py").read_text() == expected
+        assert cleanup_errors
+        assert all(not Path(directory).exists() for directory in cleanup_errors)
+    finally:
+        await base.cleanup()
