@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from opencollab.application._session_run_shared import (
     _STRUCTURED_OUTPUT_TOOL,
@@ -21,7 +21,7 @@ from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse, RequestTokenEstimatorPort
-from opencollab.application.shaping import forced_shape
+from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
@@ -438,7 +438,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = self._shape_and_trace(self.state.messages)
+        messages = await self._shape_and_trace(self.state.messages)
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
@@ -457,7 +457,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        forced = forced_shape(self.shaper, self.state.messages) if self.shaper is not None else self.state.messages
+        forced = (
+            await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
+            if self.shaper is not None else self.state.messages
+        )
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -605,6 +608,24 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             thinking_params=getattr(self.agent, "thinking_params", None),
             **extra,
         )
+
+    async def _invoke_summary(
+        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
+    ) -> CompletionResponse:
+        """Keep summary generation under the session's cooperative deadline."""
+        if self._per_call_timeout is None:
+            return await complete(messages, **kwargs)
+        try:
+            return await abandon_on_timeout(
+                complete(messages, **kwargs), self._per_call_timeout,
+                task_tracker=self._track_provider_task,
+                late_task_tracker=self._mark_provider_task_draining,
+                late_result_handler=self._record_late_provider_result,
+            )
+        except CallerTimeoutError as exc:
+            raise GenerationTimeoutError(
+                f"LLM summary generation exceeded the {self._per_call_timeout}s per-call timeout"
+            ) from exc
 
     async def _invoke_llm(self, **kwargs: Any) -> CompletionResponse:
         """Call the provider, bounding a single generation by ``_per_call_timeout``.

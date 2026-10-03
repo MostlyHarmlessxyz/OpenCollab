@@ -100,3 +100,58 @@ def test_outer_cancellation_reaches_the_owned_summary_and_prevents_an_answer(lon
     assert model.cancelled == [long]
     assert model.finished == []
     assert session.pending_cleanup_tasks == ()
+
+
+def test_forced_compaction_retry_awaits_summary_and_restores_forced_flags():
+    class OverflowModel(SlowModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            if not self.calls:
+                self.calls.append((False, threading.get_ident()))
+                raise ValueError("fixture context overflow")
+            return await super().complete(messages, tools, **kwargs)
+
+    model = OverflowModel()
+    session = build_session(agent=Agent(name="overflow", system_prompt="system"), llm=model, llm_timeout=0.02)
+    session.messages = history(False)
+    session.runner._is_context_overflow = lambda error: isinstance(error, ValueError)
+
+    async def scenario():
+        with pytest.raises(GenerationTimeoutError):
+            await asyncio.wait_for(session.run_loop(), 0.3)
+        await asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert [call[0] for call in model.calls] == [False, True]
+    assert model.cancelled == [True]
+    assert all(not getattr(shaper, "_forced", False) for shaper in session.runner.shaper._shapers)
+
+
+def test_owned_summary_client_closes_after_cancellation(monkeypatch):
+    from opencollab.bootstrap import container
+
+    clients = []
+
+    class OwnedModel(SlowModel):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.close_calls = 0
+            clients.append(self)
+
+        async def close(self):
+            self.close_calls += 1
+
+    monkeypatch.setattr(container, "LLMClient", OwnedModel)
+    session = build_session(agent=Agent(name="owned", system_prompt="system"), llm_timeout=0.02)
+    session.messages = history()
+
+    async def scenario():
+        with pytest.raises(GenerationTimeoutError):
+            await asyncio.wait_for(session.run_loop(), 0.3)
+        await asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True)
+        await session.aclose()
+
+    asyncio.run(scenario())
+    assert len(clients) == 2
+    assert clients[0].calls == []
+    assert clients[1].cancelled == [True]
+    assert [client.close_calls for client in clients] == [1, 1]

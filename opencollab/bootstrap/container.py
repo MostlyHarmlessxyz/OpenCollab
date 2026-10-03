@@ -25,7 +25,7 @@ import copy
 import inspect
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, is_context_overflow_error
@@ -147,14 +147,13 @@ def _build_summarizer(
     llm_timeout: float | None,
     auto_save_path: str | None,
     provider_retry_budget: Any | None = None,
+    completion_handler: Callable[..., Awaitable[Any]] | None = None,
 ) -> ReadTimeSummarizer:
     """Build the read-time summarizer that powers ``AutoCompactShaper``.
 
-    Read-time path owns compaction (Option B): wire the structured handoff
-    prompt into the otherwise-dormant AutoCompactShaper via a sync bridge over
-    the async LLM. We build a fresh client *inside* the summarizer coroutine so
-    its async HTTP client never crosses event loops; an injected ``llm`` is
-    reused as-is.
+    The session awaits the structured handoff prompt through its completion
+    handler. Standalone synchronous callers retain a bridge, so each owned
+    summary client is created and closed inside the completion coroutine.
     """
     reasoning_effort = getattr(agent, "reasoning_effort", None)
     summary_extra = (
@@ -164,15 +163,16 @@ def _build_summarizer(
     )
     if llm is not None:
 
-        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
+        async def _summary_complete(request: list[dict[str, Any]], **kwargs: Any) -> Any:
             return await resolved_llm.complete(
                 request,
                 temperature=0.0,
                 **summary_extra,
+                **kwargs,
             )
     else:
 
-        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
+        async def _summary_complete(request: list[dict[str, Any]], **kwargs: Any) -> Any:
             client = LLMClient(
                 model=agent.model,
                 api_key=agent.api_key,
@@ -195,6 +195,7 @@ def _build_summarizer(
                     request,
                     temperature=0.0,
                     **summary_extra,
+                    **kwargs,
                 )
             except BaseException as exc:
                 primary_failure = exc
@@ -214,7 +215,14 @@ def _build_summarizer(
                             f"summary client close also failed: {type(close_failure).__name__}: {close_failure}",
                         )
 
-    return ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
+    async def _session_complete(request: list[dict[str, Any]]) -> Any:
+        assert completion_handler is not None
+        return await completion_handler(_summary_complete, request)
+
+    return ReadTimeSummarizer(
+        _session_complete if completion_handler is not None else _summary_complete,
+        transcript_path=auto_save_path,
+    )
 
 
 def _history_compaction_settings(resolved_llm: LLMPort) -> dict[str, Any]:
@@ -485,6 +493,27 @@ def build_session_runtime(
         ask_policy=ask_policy,
         safety_policy=safety_policy,
     )
+    runner = SessionRunUseCase(
+        agent=agent,
+        state=state,
+        llm=resolved_llm,
+        event_publisher=event_bus,
+        tool_execution=tool_execution,
+        tracer=tracer,
+        max_budget_tokens=max_budget_tokens,
+        max_steps=max_steps,
+        shaper=shaper,
+        team_budget_exhausted=team_budget_exhausted,
+        # The context-overflow classifier lives in the adapter layer; injected
+        # as a plain callable so the application use case never imports it (same
+        # boundary pattern as the team-budget predicate). Enables the
+        # force-compact-and-retry + graceful-stop safety net in ``call_llm``.
+        is_context_overflow=is_context_overflow_error,
+        # Cooperative per-generation ceiling: bound a single model call to the
+        # configured provider timeout so one slow (thinking) generation cannot
+        # eat the whole run wall (P7).
+        per_call_timeout=llm_timeout,
+    )
     summarizer = _build_summarizer(
         agent,
         llm,
@@ -492,6 +521,7 @@ def build_session_runtime(
         llm_timeout,
         auto_save_path,
         provider_retry_budget,
+        completion_handler=runner._invoke_summary,
     )
     resolved_shaper: ShaperPort
     if shaper is not None:
@@ -516,27 +546,7 @@ def build_session_runtime(
         shaper_injected=shaper is not None,
         context_policy=resolved_context,
     )
-    runner = SessionRunUseCase(
-        agent=agent,
-        state=state,
-        llm=resolved_llm,
-        event_publisher=event_bus,
-        tool_execution=tool_execution,
-        tracer=tracer,
-        max_budget_tokens=max_budget_tokens,
-        max_steps=max_steps,
-        shaper=resolved_shaper,
-        team_budget_exhausted=team_budget_exhausted,
-        # The context-overflow classifier lives in the adapter layer; injected
-        # as a plain callable so the application use case never imports it (same
-        # boundary pattern as the team-budget predicate). Enables the
-        # force-compact-and-retry + graceful-stop safety net in ``call_llm``.
-        is_context_overflow=is_context_overflow_error,
-        # Cooperative per-generation ceiling: bound a single model call to the
-        # configured provider timeout so one slow (thinking) generation cannot
-        # eat the whole run wall (P7).
-        per_call_timeout=llm_timeout,
-    )
+    runner.shaper = resolved_shaper
 
     return SessionRuntime(
         state=state,

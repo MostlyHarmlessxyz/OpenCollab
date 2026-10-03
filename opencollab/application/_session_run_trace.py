@@ -12,7 +12,7 @@ from opencollab.application.steering import READS_NUDGE_SOFT
 class _SessionRunTraceMixin:
     """Observation helpers composed into session completion."""
 
-    def _shape_and_trace(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _shape_and_trace(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Shape the model's view, recording which compaction rung really fired.
 
         The shapers reshape a COPY (the transcript keeps the full history), so
@@ -26,8 +26,6 @@ class _SessionRunTraceMixin:
         The pipeline stays a pure transform: it only reports, and the sink
         lives here, where ``tracer``/``aid``/``step_count`` are already at hand.
         """
-        if self.tracer is None:
-            return self.shaper.shape(messages) if self.shaper is not None else messages
         # A ShaperPipeline names its own rungs; wrap anything else (a single
         # shaper, or nothing wired at all) so every turn still reports.
         pipeline = (
@@ -35,7 +33,9 @@ class _SessionRunTraceMixin:
             if isinstance(self.shaper, ShaperPipeline)
             else ShaperPipeline(() if self.shaper is None else (self.shaper,))
         )
-        shaped, reports = pipeline.shape_with_report(messages)
+        if self.tracer is None:
+            return await pipeline.ashape(messages)
+        shaped, reports = await pipeline.ashape_with_report(messages)
         for report in reports:
             self.tracer.log_step(
                 step_type="context_shaping",
