@@ -8,7 +8,7 @@ from opencollab.teams import (
 )
 
 
-def test_public_team_helpers_put_entry_first_with_consistent_remaining_order(tmp_path):
+def test_public_names_put_entry_first_and_other_metadata_keeps_declaration_order(tmp_path):
     path = tmp_path / "team.yaml"
     path.write_text(
         "entry: lead\nroles:\n"
@@ -20,7 +20,8 @@ def test_public_team_helpers_put_entry_first_with_consistent_remaining_order(tmp
     expected = ("lead", "coder", "tester")
 
     assert declared_role_names(str(path)) == expected
+    declared = ("coder", "lead", "tester")
     for helper in (declared_role_tools, declared_role_prompt_digests, declared_role_profiles):
-        assert tuple(helper(str(path))) == expected
+        assert tuple(helper(str(path))) == declared
     assert declared_role_tools(str(path))["lead"] == ("grep",)
     assert declared_role_profiles(str(path))["lead"] == "single2"

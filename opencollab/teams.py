@@ -11,7 +11,7 @@ file changes.
 
 import hashlib
 
-from opencollab.bootstrap.team_config import RoleConfig, load_team_config
+from opencollab.bootstrap.team_config import load_team_config
 
 __all__ = [
     "declared_role_names",
@@ -21,12 +21,6 @@ __all__ = [
 ]
 
 
-def _entry_first_roles(path: str) -> dict[str, RoleConfig]:
-    config = load_team_config(path=path)
-    names = (config.entry, *(name for name in config.roles if name != config.entry))
-    return {name: config.roles[name] for name in names}
-
-
 def declared_role_names(path: str) -> tuple[str, ...]:
     """The role names a team file declares, the entry role first.
 
@@ -34,7 +28,8 @@ def declared_role_names(path: str) -> tuple[str, ...]:
     role is seated before the first model call under a prebuilt roster, so the
     count is a property of the file rather than of how the run turns out.
     """
-    return tuple(_entry_first_roles(path))
+    config = load_team_config(path=path)
+    return (config.entry, *(name for name in config.roles if name != config.entry))
 
 
 def declared_role_tools(path: str) -> dict[str, tuple[str, ...]]:
@@ -47,13 +42,13 @@ def declared_role_tools(path: str) -> dict[str, tuple[str, ...]]:
     raw names instead, and a team whose file spells a role differently from its
     topology would then report bundles nobody is seated with.
 
-    The entry role comes first, followed by the other roles in declaration order.
-    Whether a name survives into
+    The names are the file's, in the file's order. Whether a name survives into
     a live seat is a separate, capability-level question -- ``ask_user`` is
     dropped when no human is at the run -- and a role that declares no tools is
     given its fallback bundle at spawn time, not here.
     """
-    return {name: tuple(role.tools) for name, role in _entry_first_roles(path).items()}
+    config = load_team_config(path=path)
+    return {name: tuple(role.tools) for name, role in config.roles.items()}
 
 
 def declared_role_prompt_digests(path: str) -> dict[str, str]:
@@ -72,9 +67,10 @@ def declared_role_prompt_digests(path: str) -> dict[str, str]:
     should carry: it is fixed width, it compares exactly, and it says nothing
     about the card beyond identity, which is all a grouping key may claim.
     """
+    config = load_team_config(path=path)
     return {
         name: hashlib.sha256(role.prompt.encode("utf-8")).hexdigest()
-        for name, role in _entry_first_roles(path).items()
+        for name, role in config.roles.items()
     }
 
 
@@ -92,4 +88,5 @@ def declared_role_profiles(path: str) -> dict[str, str | None]:
     ``None`` is OpenCollab's own agent, which is what every role that does not
     declare a profile runs as.
     """
-    return {name: role.profile for name, role in _entry_first_roles(path).items()}
+    config = load_team_config(path=path)
+    return {name: role.profile for name, role in config.roles.items()}
