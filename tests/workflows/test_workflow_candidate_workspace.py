@@ -345,7 +345,6 @@ async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resour
     assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D02 candidate isolation accepts unscoped legacy capabilities")
 @pytest.mark.parametrize("nested_wrapper", [False, True])
 @pytest.mark.asyncio
 async def test_candidate_isolation_rejects_legacy_factory_before_allocating(tmp_path, nested_wrapper):
@@ -452,7 +451,6 @@ async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_pat
     assert parent.budget._leases == []
 
 
-@pytest.mark.xfail(strict=True, reason="OC-D02 legacy cleanup releases other owners")
 @pytest.mark.asyncio
 async def test_candidate_rejects_old_factory_without_releasing_other_owner(tmp_path, monkeypatch):
     from opencollab.bootstrap import _workflow_runtime_session as runtime

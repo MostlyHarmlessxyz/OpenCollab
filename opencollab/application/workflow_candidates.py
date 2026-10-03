@@ -90,11 +90,13 @@ class _CandidateWorkflowSessionFactory:
         self, *, label: str | None = None, environment: Any | None = None,
     ) -> Any:
         owner = self._environment if environment is None else environment
-        acquire = self._factory.acquire_isolated_env
-        kwargs = {"label": label}
-        if _accepts_environment(acquire):
-            kwargs["environment"] = owner
-        isolated = await acquire(**kwargs)
+        acquire = getattr(self._factory, "acquire_isolated_env", None)
+        release = getattr(self._factory, "release_isolated_envs", None)
+        if not callable(acquire) or not callable(release) or not (
+            _accepts_environment(acquire) and _accepts_environment(release)
+        ):
+            raise TypeError("candidate isolation requires environment-aware acquisition and scoped release")
+        isolated = await acquire(label=label, environment=owner)
         self._isolated_environments.append((owner, isolated))
         return isolated
 
@@ -134,9 +136,9 @@ class _CandidateWorkflowSessionFactory:
         else:
             release = getattr(self._factory, "release_isolated_envs", None)
             try:
-                if callable(release):
-                    kwargs = {"environment": owner} if _accepts_environment(release) else {}
-                    await release(**kwargs)
+                if not callable(release) or not _accepts_environment(release):
+                    raise TypeError("candidate isolation requires environment-scoped release")
+                await release(environment=owner)
             except Exception as exc:
                 errors.append(exc)
             else:
