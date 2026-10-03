@@ -491,3 +491,22 @@ def test_deferred_rejected_synchronously_does_not_suspend():
     assert state.pending_events.is_empty()
     tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
     assert tool_msgs == [{"role": "tool", "tool_call_id": "s1", "content": "Permission denied: nope"}]
+
+
+@pytest.mark.parametrize("name", ["SPAWN_AGENT", "Spawn_Agent"])
+def test_repaired_deferred_tool_name_keeps_pending_child_ownership(name):
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    executor = FakeToolExecutionDeferred(deferred_outcomes={"child": (7, None)})
+    runner = build_runner(state=state, tool_execution=executor, llm=FakeLLM([
+        llm_response(
+            tool_calls=[tool_call(call_id="child", name=name, arguments="{}")],
+            finish_reason="tool_calls",
+        ),
+    ]))
+    run(runner.run_loop())
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    assert executor.process_calls == []
+    assert len(executor.deferred_calls) == 1
+    row = state.pending_events.rows["child"]
+    assert row.ref == 7
+    assert row.status is RowStatus.PENDING

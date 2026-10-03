@@ -14,6 +14,7 @@ from typing import Any
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.env import DockerWorkspaceEnvironment
+from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
 
@@ -49,6 +50,8 @@ async def _raw_diff_at(
     environment: Any,
     workspace: str,
     exclude_paths: Sequence[str] = (),
+    *,
+    base_revision: str = "HEAD",
 ) -> str:
     excluded = tuple(_safe_path(path) for path in exclude_paths)
     pathspec = ""
@@ -59,7 +62,7 @@ async def _raw_diff_at(
     tracked = _complete(
         await environment.exec_cmd(
             "git -C "
-            f"{shlex.quote(workspace)} --no-pager diff HEAD --binary --no-ext-diff"
+            f"{shlex.quote(workspace)} --no-pager diff {shlex.quote(base_revision)} --binary --no-ext-diff"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -97,12 +100,15 @@ class _CandidateLease:
     environment: Any
     source_workspace: str
     candidate_workspace: str
+    base_revision: str
     cleaned: bool = False
 
-    async def diff(self) -> str:
+    async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
         return await _raw_diff_at(
             self.base_environment,
             self.candidate_workspace,
+            exclude_paths,
+            base_revision=self.base_revision,
         )
 
     async def cleanup(self) -> None:
@@ -151,10 +157,17 @@ class EnvCandidateWorkspace:
             os.rmdir(path)
         else:
             path = f"/tmp/opencollab-candidate-{token}"
+        base_revision = _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(self._workspace)} rev-parse --verify HEAD",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate base revision",
+        ).strip()
         result = await self._environment.exec_cmd(
             "git -C "
             f"{shlex.quote(self._workspace)} worktree add --detach -- "
-            f"{shlex.quote(path)} HEAD",
+            f"{shlex.quote(path)} {shlex.quote(base_revision)}",
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         )
         _complete(result, f"candidate worktree setup for {label}")
@@ -165,6 +178,7 @@ class EnvCandidateWorkspace:
             environment=environment,
             source_workspace=self._workspace,
             candidate_workspace=path,
+            base_revision=base_revision,
         )
 
     async def _write_patch(self, content: str, prefix: str) -> str:
@@ -231,13 +245,13 @@ class EnvCandidateWorkspace:
     async def _patch_paths(self, path: str) -> set[str]:
         result = await self._environment.exec_cmd(
             "git -C "
-            f"{shlex.quote(self._workspace)} apply --numstat -- {shlex.quote(path)}",
+            f"{shlex.quote(self._workspace)} apply --numstat -z -- {shlex.quote(path)}",
             timeout=30,
         )
         output = _complete(result, "candidate path inspection")
         return {
             line.split("\t", 2)[-1]
-            for line in output.splitlines()
+            for line in output.split("\0")
             if line.count("\t") >= 2
         }
 
@@ -259,6 +273,7 @@ class EnvCandidateWorkspace:
         reversed_original = False
         try:
             candidate_paths = await self._patch_paths(candidate_file)
+            candidate_paths.update(patch_paths(patch))
             if candidate_paths.intersection(preserved):
                 raise ValueError("candidate patch overlaps a preserved path")
             if original_source.strip():

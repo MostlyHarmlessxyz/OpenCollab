@@ -105,7 +105,7 @@ def _normalize_profile(value: str | None) -> str | None:
     """
     if value is None:
         return None
-    name = value.strip()
+    name = value.strip().lower()
     if not name:
         raise ValueError("role profile must not be blank")
 

@@ -160,8 +160,19 @@ class GitDiffTool(Tool):
                 for entry in untracked_result.stdout.split("\0")
                 if entry.startswith("?? ")
             ]
+            git_root = ""
+            if untracked_paths:
+                root_result = await env.exec_cmd("git rev-parse --show-toplevel", timeout=30)
+                git_root = root_result.stdout.rstrip("\n")
+                if root_result.returncode != 0 or not git_root:
+                    error = (root_result.stderr or root_result.stdout).strip()
+                    return "Error locating the Git root for untracked files:\n" + truncate(
+                        error, self.max_status_chars,
+                    )
             for untracked_path in untracked_paths[:MAX_UNTRACKED_DIFF_FILES]:
-                untracked_diff_cmd = "git --no-pager diff --no-index"
+                # Porcelain paths are rooted at the repository, including when
+                # the execution environment's workspace is a subdirectory.
+                untracked_diff_cmd = f"git --no-pager -C {shlex.quote(git_root)} diff --no-index"
                 if stat_only:
                     untracked_diff_cmd += " --stat"
                 untracked_diff_cmd += (

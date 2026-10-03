@@ -381,19 +381,19 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
     def resolve(key: str, *fallback_keys: str, default: str | None = None) -> str | None:
         # Check env vars first (highest priority)
         val = os.environ.get(key)
-        if val:
+        if val and val.strip():
             return val
         for fk in fallback_keys:
             val = os.environ.get(fk)
-            if val:
+            if val and val.strip():
                 return val
         # Check .env file
         val = dotenv.get(key)
-        if val:
+        if val and val.strip():
             return val
         for fk in fallback_keys:
             val = dotenv.get(fk)
-            if val:
+            if val and val.strip():
                 return val
         return default
 
@@ -404,7 +404,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         for key in keys:
             for source in (os.environ, dotenv):
                 val = source.get(key)
-                if val:
+                if val and val.strip():
                     return val
         return default
 

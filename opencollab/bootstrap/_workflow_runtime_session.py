@@ -144,6 +144,7 @@ class WorkflowSessionFactory:
         # and an isolated teammate get the same kind of workspace, so a handoff
         # between two agents means the same thing in either arm.
         self._worktree_pool: WorktreePool | None = None
+        self._candidate_isolation_leases: list[tuple[Any, Any]] = []
 
     @property
     def environment_revoked(self) -> bool:
@@ -178,7 +179,9 @@ class WorkflowSessionFactory:
             return None
         return workflow_transcript_path(self._save_dir, aid, label)
 
-    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
+    async def acquire_isolated_env(
+        self, *, label: str | None = None, environment: Any | None = None
+    ) -> Any:
         """Check out a working tree this agent alone edits.
 
         A linked worktree, so it shares ``.git/objects`` with the workspace it
@@ -192,6 +195,18 @@ class WorkflowSessionFactory:
         explicit workspace or current directory is copied or checked out into
         a private worktree; an isolation request never shares the source tree.
         """
+        if environment is not None:
+            workspace = EnvCandidateWorkspace(environment)
+            snapshot = await workspace.source_diff()
+            lease = await workspace.acquire(label or "workflow-agent")
+            try:
+                if snapshot.strip():
+                    await EnvCandidateWorkspace(lease.environment).adopt(snapshot)
+            except BaseException:
+                await lease.cleanup()
+                raise
+            self._candidate_isolation_leases.append((environment, lease))
+            return lease.environment
         if self._worktree_pool is None:
             self._worktree_pool = WorktreePool(
                 self._workspace or ".",
@@ -200,12 +215,26 @@ class WorkflowSessionFactory:
             )
         return await self._worktree_pool.acquire(label or "workflow-agent")
 
-    async def release_isolated_envs(self) -> None:
-        """Release worktrees while retaining the pool for retry or later use."""
-        pool = self._worktree_pool
-        if pool is None:
-            return
-        await pool.release()
+    async def release_isolated_envs(self, *, environment: Any | None = None) -> None:
+        """Release each owned environment and retain failed leases for retry."""
+        errors: list[Exception] = []
+        for owner, lease in tuple(self._candidate_isolation_leases):
+            if environment is not None and owner is not environment:
+                continue
+            try:
+                await lease.cleanup()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._candidate_isolation_leases.remove((owner, lease))
+        if environment is None and self._worktree_pool is not None:
+            try:
+                await self._worktree_pool.release()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
+            raise OSError(f"isolated environment cleanup failed: {detail}") from errors[0]
 
     def build_workflow_session(
         self,

@@ -33,7 +33,7 @@ from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.token_estimation import estimate_request_tokens
-from opencollab.domain.tools import ToolProcessingResult
+from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_key
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +130,20 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     error=error,
                 )
 
+    def _is_deferred_tool_name(self, name: object) -> bool:
+        try:
+            key = tool_name_collision_key(name)
+        except ValueError:
+            return False
+        return any(tool_name_collision_key(allowed) == key for allowed in self.deferrable_tool_names)
+
     def _split_tool_calls(self, tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
         """Partition a batch into (immediate, deferred) by deferrable name."""
         immediate: list[dict] = []
         deferred: list[dict] = []
         for tc in tool_calls:
             name = tc.get("function", {}).get("name")
-            if name in self.deferrable_tool_names:
+            if self._is_deferred_tool_name(name):
                 deferred.append(tc)
             else:
                 immediate.append(tc)
@@ -321,7 +328,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     }
                 ])
                 continue
-            if tc.get("function", {}).get("name") in self.deferrable_tool_names:
+            if self._is_deferred_tool_name(tc.get("function", {}).get("name")):
                 await self._execute_deferred_tools(table, order, [tc])
                 continue
 

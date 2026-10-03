@@ -337,3 +337,36 @@ def test_scheduler_can_leave_every_seat_without_a_step_ceiling(tmp_path):
     assert scheduler.lead_session.max_steps is None
     assert scheduler.lead_session.runner.max_steps is None
     assert scheduler._session_factory._max_steps is None
+
+
+@pytest.mark.asyncio
+async def test_build_scheduler_restores_zero_step_journal_only_session(tmp_path, monkeypatch):
+    import asyncio
+
+    from opencollab.adapters.storage import SessionStore
+    from opencollab.bootstrap import build_session
+    from tests.support.session_characterization_test_support import FakeAgent, FakeLLMClient
+
+    path = tmp_path / "sdk-session.json"
+
+    def interrupted_checkpoint(*args, **kwargs):
+        raise OSError("checkpoint publication interrupted")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(SessionStore, "checkpoint_snapshot", interrupted_checkpoint)
+        original = build_session(agent=FakeAgent(), llm=FakeLLMClient(), auto_save_path=str(path))
+        await original.add_user_message("recover my initial request")
+        await asyncio.gather(*original.pending_cleanup_tasks)
+    assert original.step_count == 0
+    assert not path.exists()
+    assert (tmp_path / "sdk-session.json.journal").stat().st_size > 0
+    assert SessionStore().has_snapshot(str(path))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(ctx, use_worktrees=False, interactive=False, auto_save=False, session_file=str(path))
+    lead = scheduler.lead_session
+    assert lead.step_count == 0
+    assert lead.messages[-1]["content"] == "recover my initial request"
+    assert lead.state.pending_external_user_turn is not None
+    await scheduler.cleanup()

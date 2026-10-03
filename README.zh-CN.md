@@ -49,7 +49,9 @@ cp configs/.env.example configs/.env   # 然后设置 OPENCOLLAB_API_KEY
 uv run opencollab --workspace .
 ```
 
-`configs/.env` 可以指向任何 OpenAI 兼容端点或 Anthropic 端点；不要提交真实的 API key。这条命令启动内置的 `lead` agent，它可以按需派生专职 agent。在一个 Git 仓库上运行 Duo：
+`configs/.env` 可以指向任何 OpenAI 兼容端点或 Anthropic 端点。不要提交真实的 API key。
+这条命令启动内置的 Self-Collaboration 团队，由 Analyst 作为入口规划任务并派生 Coder 和 Tester，协作关系由封闭拓扑限定。
+需要增加角色时，按下文示例选择显式团队文件。使用以下命令在 Git 仓库上运行 Duo。
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \

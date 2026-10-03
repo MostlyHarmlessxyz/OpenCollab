@@ -52,7 +52,12 @@ agree or they do not.
 
 ## Running it
 
+From the root of your OpenCollab source checkout, set the example's discovery
+directory and run it against the target workspace. The absolute directory
+keeps discovery tied to this example when the target repository is elsewhere.
+
 ```bash
+export OPENCOLLAB_WORKFLOWS_DIR="$(pwd)/examples/dw-handoff/workflows"
 opencollab workflow run dw-handoff \
   --workspace /path/to/a/git/repo \
   --args '{"goal": "the task the agents are given"}'

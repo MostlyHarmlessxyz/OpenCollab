@@ -51,17 +51,4 @@ def resolve_config(workspace: str, model: str | None, provider: str | None,
         ).model_dump()
     except (OSError, ValueError) as exc:
         raise typer.BadParameter(f"Cannot load configuration: {exc}") from exc
-    return {
-        "model": cfg["model"],
-        "provider": cfg["provider"],
-        "api_key": cfg["api_key"],
-        "base_url": cfg["base_url"],
-        "budget": cfg["budget"],
-        "temperature": cfg["temperature"],
-        "top_p": cfg.get("top_p"),
-        "max_output_tokens": cfg["max_output_tokens"],
-        "thinking": cfg["thinking"],
-        "thinking_params": cfg["thinking_params"],
-        "llm_timeout": cfg["llm_timeout"],
-        "filter_messages": cfg["filter_messages"],
-    }
+    return cfg

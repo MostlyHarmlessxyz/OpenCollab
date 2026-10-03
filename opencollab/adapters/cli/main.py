@@ -46,6 +46,7 @@ from opencollab.adapters.safe_files import read_regular_text
 from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerTurnError
+from opencollab.domain.session import SessionPhase
 
 app = typer.Typer(
     name="opencollab",
@@ -399,8 +400,10 @@ async def _run(
         # Holding means staying at the prompt, so a run with no screen to hold
         # it on has nothing to stay for.
         holding = hold_after_run and has_screen
+        one_shot_error = False
 
         async def turn(line: str, target_aid: int, cancel: asyncio.Event) -> None:
+            nonlocal one_shot_error
             tui.select_agent(target_aid)
             tui.reset()
             tui.record_user_message(target_aid, line)
@@ -428,6 +431,8 @@ async def _run(
                 )
             if failure is not None:
                 _report_turn_failure(tui, failure)
+                if one_shot and failure.phase is SessionPhase.ERROR:
+                    one_shot_error = True
             if not one_shot or holding:
                 # The rule separates turns. A run that ends with this one has
                 # nothing to separate it from.
@@ -454,6 +459,8 @@ async def _run(
                 reader=reader,
                 until_drained=one_shot and not holding,
             )
+        if one_shot_error:
+            raise typer.Exit(code=1)
     except BaseException as exc:
         primary_failure = exc
     if scheduler is not None:

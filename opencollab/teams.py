@@ -28,7 +28,8 @@ def declared_role_names(path: str) -> tuple[str, ...]:
     role is seated before the first model call under a prebuilt roster, so the
     count is a property of the file rather than of how the run turns out.
     """
-    return tuple(load_team_config(path=path).roles)
+    config = load_team_config(path=path)
+    return (config.entry, *(name for name in config.roles if name != config.entry))
 
 
 def declared_role_tools(path: str) -> dict[str, tuple[str, ...]]:

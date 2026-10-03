@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
+from opencollab.adapters.llm._responses_output import (
+    _merge_terminal_projection,
+    _output_items_agree,
+    _output_text,
+    _reasoning_text,
+)
+from opencollab.adapters.llm._responses_output import (
+    _semantic_output_item as _semantic_output_item,
+)
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.responses_errors import (
@@ -285,10 +293,14 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
         fragments = state.argument_fragments.pop(index, []) if isinstance(index, int) else []
         if fragments and "".join(fragments) != arguments:
             raise ResponsesProtocolError(f"function_call {call_id!r} argument fragments disagree")
-        try:
-            json.loads(arguments)
-        except (TypeError, ValueError) as exc:
-            raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ResponsesProtocolError(f"function_call {call_id!r} is missing name")
+        if item.get("status") != "incomplete":
+            try:
+                _function_call_identity(call_id, name, arguments)
+            except ResponsesProtocolError as exc:
+                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
     state.output_items.append(item)
 
 
@@ -409,7 +421,18 @@ async def _consume_stream(
             if asyncio.iscoroutine(result):
                 await result
     if state.argument_fragments:
-        raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
+        _, finish_reason = _validate_terminal_response(state.completed_response, expected_model)
+        output = _validated_response_items(to_plain_data(getattr(state.completed_response, "output", None)))
+        covered = finish_reason == "max_tokens" and all(
+            0 <= index < len(output)
+            and output[index].get("type") == "function_call"
+            and output[index].get("status") == "incomplete"
+            and output[index].get("arguments") == "".join(fragments)
+            for index, fragments in state.argument_fragments.items()
+        )
+        if not covered:
+            raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
+        state.argument_fragments.clear()
     return state
 
 
@@ -455,115 +478,6 @@ async def _create_and_consume_stream(
     )
 
 
-def _output_text(item: dict[str, Any]) -> str:
-    if item.get("type") != "message":
-        return ""
-    parts: list[str] = []
-    for content in item.get("content") or ():
-        if not isinstance(content, dict):
-            continue
-        if content.get("type") == "output_text" and isinstance(content.get("text"), str):
-            parts.append(content["text"])
-        elif content.get("type") == "refusal" and isinstance(content.get("refusal"), str):
-            parts.append(content["refusal"])
-    return "".join(parts)
-
-
-def _reasoning_text(item: dict[str, Any]) -> str:
-    if item.get("type") != "reasoning":
-        return ""
-    parts: list[str] = []
-    for summary in item.get("summary") or ():
-        if isinstance(summary, dict) and isinstance(summary.get("text"), str):
-            parts.append(summary["text"])
-    return "\n".join(parts)
-
-
-def _semantic_output_item(item: dict[str, Any]) -> tuple[Any, ...]:
-    """Return the stable meaning shared by streamed and terminal output items."""
-    item_type = item.get("type")
-    if item_type == "function_call":
-        return (
-            item_type,
-            *_function_call_identity(
-                item.get("call_id"),
-                item.get("name"),
-                item.get("arguments"),
-            ),
-        )
-    if item_type == "message":
-        role = item.get("role")
-        if not isinstance(role, str) or not role:
-            raise ResponsesProtocolError("message output item is missing its role")
-        phase = item.get("phase")
-        if phase is not None and phase not in {"commentary", "final_answer"}:
-            raise ResponsesProtocolError(
-                f"message output contains unsupported phase {phase!r}"
-            )
-        parts: list[tuple[str, str]] = []
-        for raw_part in item.get("content") or ():
-            if not isinstance(raw_part, dict):
-                raise ResponsesProtocolError("message output contains an invalid content part")
-            part_type = raw_part.get("type")
-            if part_type == "output_text" and isinstance(raw_part.get("text"), str):
-                parts.append((part_type, raw_part["text"]))
-            elif part_type == "refusal" and isinstance(raw_part.get("refusal"), str):
-                parts.append((part_type, raw_part["refusal"]))
-            else:
-                raise ResponsesProtocolError("message output contains an unsupported content part")
-        return item_type, role, tuple(parts)
-    if item_type == "reasoning":
-        summaries: list[tuple[str | None, str]] = []
-        for raw_summary in item.get("summary") or ():
-            if not isinstance(raw_summary, dict) or not isinstance(raw_summary.get("text"), str):
-                raise ResponsesProtocolError("reasoning output contains an invalid summary part")
-            summaries.append((raw_summary.get("type"), raw_summary["text"]))
-        return item_type, tuple(summaries)
-    raise ResponsesProtocolError("response output contains an unsupported item")
-
-
-def _output_items_agree(streamed: dict[str, Any], terminal: dict[str, Any]) -> bool:
-    if _semantic_output_item(streamed) != _semantic_output_item(terminal):
-        return False
-    if streamed.get("type") == "message":
-        streamed_phase = streamed.get("phase")
-        terminal_phase = terminal.get("phase")
-        if (
-            streamed_phase is not None
-            and terminal_phase is not None
-            and streamed_phase != terminal_phase
-        ):
-            return False
-        return True
-    if streamed.get("type") != "reasoning":
-        return True
-    streamed_encrypted = streamed.get("encrypted_content")
-    terminal_encrypted = terminal.get("encrypted_content")
-    for value in (streamed_encrypted, terminal_encrypted):
-        if value is not None and not isinstance(value, str):
-            raise ResponsesProtocolError("reasoning output contains invalid encrypted content")
-    return streamed_encrypted is None or terminal_encrypted is None or streamed_encrypted == terminal_encrypted
-
-
-def _merge_terminal_projection(
-    streamed: dict[str, Any],
-    terminal: dict[str, Any],
-) -> dict[str, Any]:
-    if (
-        streamed.get("type") == "reasoning"
-        and streamed.get("encrypted_content") is None
-        and terminal.get("encrypted_content") is not None
-    ):
-        streamed = {**streamed, "encrypted_content": terminal["encrypted_content"]}
-    if (
-        streamed.get("type") == "message"
-        and streamed.get("phase") is None
-        and terminal.get("phase") is not None
-    ):
-        streamed = {**streamed, "phase": terminal["phase"]}
-    return streamed
-
-
 def _parse_stream(
     state: _StreamState,
     messages: list[dict[str, Any]],
@@ -580,6 +494,21 @@ def _parse_stream(
         raise ResponsesProtocolError(f"JSON Schema tool response incomplete: {incomplete!r}")
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
+    interrupted_calls = any(
+        item.get("type") == "function_call" and item.get("status") == "incomplete"
+        for item in final_items
+    )
+    if interrupted_calls:
+        if finish_reason != "max_tokens":
+            raise ResponsesProtocolError("completed Responses output contains incomplete tool calls")
+        final_items = [
+            item for item in final_items
+            if item.get("type") != "function_call" or item.get("status") != "incomplete"
+        ]
+        state.output_items = [
+            item for item in state.output_items
+            if item.get("type") != "function_call" or item.get("status") != "incomplete"
+        ]
     output_mismatch = len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
@@ -633,7 +562,7 @@ def _parse_stream(
         state.output_items.append(synthetic_item)
         content = None
     content = rescue_empty_turn(content, tool_calls, reasoning)
-    if not content and not tool_calls:
+    if not content and not tool_calls and finish_reason != "max_tokens":
         raise ResponsesEmptyOutputError("response.completed contained no message or function call")
     return LLMResponse(
         content=content,

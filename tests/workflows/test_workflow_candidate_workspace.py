@@ -189,3 +189,360 @@ async def test_base_environment_captures_relative_untracked_candidate_diff(
 
     assert "b/new_file.py" in diff
     assert lease.candidate_workspace not in diff
+
+
+@pytest.mark.parametrize("nested_wrapper", [False, True])
+@pytest.mark.asyncio
+async def test_candidate_isolated_role_reads_current_candidate_and_owns_cleanup(tmp_path, monkeypatch, nested_wrapper):
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    built = []
+
+    class ReadingSession(FakeSession):
+        def __init__(self, environment):
+            super().__init__(tokens=3)
+            self.environment = environment
+            self.closes = 0
+
+        async def run_loop(self, cancel_event=None):
+            if self.prompt == "edit candidate":
+                await self.environment.write_file("source.py", "value = 2\n")
+                await self.environment.write_file("untracked.txt", "candidate content\n")
+                return "edited"
+            value = await self.environment.read_file("source.py")
+            extra = await self.environment.read_file("untracked.txt")
+            await self.environment.write_file("source.py", "value = 9\n")
+            return value + extra
+
+        async def aclose(self):
+            self.closes += 1
+
+    def build(**kwargs):
+        session = ReadingSession(kwargs["env"])
+        built.append(session)
+        return session
+
+    monkeypatch.setattr(runtime, "build_session", build)
+    factory = runtime.WorkflowSessionFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None,
+        workspace=str(repo), env=base,
+    )
+    if nested_wrapper:
+        from opencollab.application.workflow_candidates import _CandidateWorkflowSessionFactory
+
+        factory = _CandidateWorkflowSessionFactory(factory, base)
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+
+    async def nested(child, _args):
+        await child.agent("edit candidate")
+        reply = await child.agent("inspect candidate", isolation=True, label="scout")
+        assert await built[0].environment.read_file("source.py") == "value = 2\n"
+        return reply
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == "value = 2\ncandidate content\n"
+    assert parent.tokens_spent() == 6
+    assert len(parent.sessions) == 2
+    assert built[1].environment.workspace != built[0].environment.workspace
+    assert built[1].closes == 1
+    assert built[0].closes == 0
+    assert base.revoked is False
+    assert (repo / "source.py").read_text() == "value = 1\n"
+    assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+    await factory.release_isolated_envs()
+    assert base.revoked is False
+
+
+@pytest.mark.parametrize("source_edit", [False, True])
+@pytest.mark.asyncio
+async def test_candidate_source_changed_honors_excluded_paths(tmp_path, source_edit):
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    factory = _Factory(base)
+    parent = WorkflowContext(factory, candidate_workspace=EnvCandidateWorkspace(base))
+
+    async def nested(child, _args):
+        environment = child._factory._environment
+        await environment.write_file("generated_test.py", "test_case = 1\n")
+        if source_edit:
+            await environment.write_file("source.py", "value = 2\n")
+        return {"all": await child.tree_changed(), "source": await child.source_changed(["generated_test.py"])}
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == {"all": True, "source": source_edit}
+    assert "generated_test.py" in candidate.diff
+
+
+@pytest.mark.parametrize("failure_kind", ["close", "cleanup"])
+@pytest.mark.asyncio
+async def test_candidate_isolation_cleanup_failure_keeps_budget_and_other_resources(
+    tmp_path, monkeypatch, failure_kind,
+):
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    built = []
+    fault = {"lease": None, "enabled": True}
+
+    class ClosingSession(FakeSession):
+        def __init__(self, environment):
+            super().__init__(tokens=3)
+            self.environment = environment
+            self.closes = 0
+
+        async def aclose(self):
+            self.closes += 1
+            if failure_kind == "close" and self.prompt == "first":
+                raise OSError("isolated close failed")
+
+    def build(**kwargs):
+        session = ClosingSession(kwargs["env"])
+        built.append(session)
+        return session
+
+    monkeypatch.setattr(runtime, "build_session", build)
+    factory = runtime.WorkflowSessionFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None, workspace=str(repo), env=base,
+    )
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+    source_owner = []
+
+    async def nested(child, _args):
+        await child.agent("first", isolation=True)
+        await child.agent("second", isolation=True)
+        owner, lease = factory._candidate_isolation_leases[0]
+        source_owner.append(owner)
+        if failure_kind == "cleanup":
+            fault["lease"] = lease
+            real_cleanup = type(lease).cleanup
+
+            async def cleanup(current):
+                if current is fault["lease"] and fault["enabled"]:
+                    raise OSError("isolated worktree cleanup failed")
+                await real_cleanup(current)
+
+            monkeypatch.setattr(type(lease), "cleanup", cleanup)
+        return "done"
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output == "done"
+    assert candidate.lifecycle_errors
+    assert parent.tokens_spent() == 6
+    assert parent.tokens_remaining() == 94
+    assert parent.budget._leases == []
+    assert [session.closes for session in built] == [1, 1]
+    assert built[1].environment.revoked is True
+    assert base.revoked is False
+    if failure_kind == "cleanup":
+        assert len(factory._candidate_isolation_leases) == 1
+        assert source_owner[0].revoked is False
+        fault["enabled"] = False
+        await factory.release_isolated_envs()
+        await source_owner[0].cleanup()
+        _git(repo, "worktree", "remove", "--force", source_owner[0].workspace)
+    else:
+        assert factory._candidate_isolation_leases == []
+    assert len(_git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+
+
+@pytest.mark.parametrize("nested_wrapper", [False, True])
+@pytest.mark.asyncio
+async def test_candidate_isolation_rejects_legacy_factory_before_allocating(tmp_path, nested_wrapper):
+    from opencollab.application.workflow_candidates import _CandidateWorkflowSessionFactory
+    from tests.support.workflow_context_test_support import FakeFactory, FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    legacy = FakeFactory([FakeSession(tokens=7)])
+    factory = _CandidateWorkflowSessionFactory(legacy, base) if nested_wrapper else legacy
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+
+    async def nested(child, _args):
+        return await child.agent("legacy isolation", isolation=True, label="scout")
+
+    candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+    assert candidate.output is None
+    assert parent.tokens_spent() == 0
+    assert parent.agent_failures[0]["exception_type"] == "TypeError"
+    assert legacy.handed_out == []
+    assert base.revoked is False
+
+
+@pytest.mark.asyncio
+async def test_candidate_capture_includes_committed_and_uncommitted_edits(tmp_path):
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(base)
+    lease = await workspace.acquire("candidate")
+    try:
+        candidate_repo = Path(lease.candidate_workspace)
+        await lease.environment.write_file("source.py", "value = 2\n")
+        _git(candidate_repo, "add", "source.py")
+        _git(candidate_repo, "-c", "commit.gpgsign=false", "commit", "-m", "candidate change")
+        await lease.environment.write_file("source.py", "value = 3\n")
+        await lease.environment.write_file("new_file.py", "new_value = 4\n")
+        diff = await lease.diff()
+        assert "-value = 1" in diff
+        assert "+value = 3" in diff
+        assert "+new_value = 4" in diff
+        await workspace.adopt(diff)
+        assert (repo / "source.py").read_text() == "value = 3\n"
+        assert (repo / "new_file.py").read_text() == "new_value = 4\n"
+    finally:
+        await lease.cleanup()
+
+
+@pytest.mark.parametrize("name", [
+    "protected.txt", "protected file.txt", "protected_\u6570\u636e.txt", "protected\tfile.txt",
+])
+@pytest.mark.asyncio
+async def test_candidate_adoption_preserves_git_quoted_file_paths(tmp_path, name):
+    repo = _repository(tmp_path)
+    _git(repo, "config", "core.quotePath", "true")
+    protected = repo / name
+    protected.write_text("protected = True\n")
+    _git(repo, "add", "--", name)
+    _git(repo, "commit", "-m", "protected file")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        await lease.environment.write_file(name, "protected = False\n")
+        patch = await lease.diff()
+        with pytest.raises(ValueError, match="preserved"):
+            await workspace.adopt(patch, preserve_paths=[name])
+        assert protected.read_text() == "protected = True\n"
+    finally:
+        await lease.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_candidate_cleanup_preserves_cancellation_without_add_note(tmp_path, monkeypatch):
+    import asyncio
+
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    class LegacyCancelledError(asyncio.CancelledError):
+        add_note = None
+
+    class ClosingSession(FakeSession):
+        async def aclose(self):
+            raise OSError("isolated close failed")
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    monkeypatch.setattr(runtime, "build_session", lambda **kwargs: ClosingSession(tokens=7))
+    factory = runtime.WorkflowSessionFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None, workspace=str(repo), env=base,
+    )
+    parent = WorkflowContext(factory, budget_total=100, candidate_workspace=EnvCandidateWorkspace(base))
+    original = LegacyCancelledError("original cancellation")
+
+    async def nested(child, _args):
+        await child.agent("finished role", isolation=True)
+        raise original
+
+    with pytest.raises(LegacyCancelledError) as captured:
+        await parent.candidate_workflow(nested, {}, label="candidate")
+    assert captured.value is original
+    assert any("isolated close failed" in note for note in original.__notes__)
+    assert parent.tokens_spent() == 7
+    assert parent.tokens_remaining() == 93
+    assert parent.budget._leases == []
+
+
+@pytest.mark.asyncio
+async def test_candidate_rejects_old_factory_without_releasing_other_owner(tmp_path, monkeypatch):
+    from opencollab.bootstrap import _workflow_runtime_session as runtime
+    from tests.support.workflow_context_test_support import FakeSession
+
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+
+    class LegacyFactory(runtime.WorkflowSessionFactory):
+        allocations = 0
+        releases = 0
+
+        async def acquire_isolated_env(self, *, label=None):
+            self.allocations += 1
+            return await super().acquire_isolated_env(label=label)
+
+        async def release_isolated_envs(self):
+            self.releases += 1
+            await super().release_isolated_envs()
+
+    class ReadingSession(FakeSession):
+        def __init__(self, environment):
+            super().__init__(tokens=3)
+            self.environment = environment
+
+        async def run_loop(self, cancel_event=None):
+            return await self.environment.read_file("source.py")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(runtime, "build_session", lambda **kwargs: ReadingSession(kwargs["env"]))
+    factory = LegacyFactory(
+        model="gpt-fake", provider="openai", api_key=None, base_url=None, workspace=str(repo), env=base,
+    )
+    other = await factory.acquire_isolated_env(label="other-owner")
+    try:
+        parent = WorkflowContext(factory, candidate_workspace=EnvCandidateWorkspace(base))
+
+        async def nested(child, _args):
+            return await child.agent("inspect", isolation=True)
+
+        candidate = await parent.candidate_workflow(nested, {}, label="candidate")
+        assert candidate.output is None
+        assert parent.agent_failures[0]["exception_type"] == "TypeError"
+        assert factory.allocations == 1
+        assert factory.releases == 0
+        assert other.revoked is False
+        assert await other.read_file("source.py") == "value = 1\n"
+        ordinary = WorkflowContext(factory)
+        assert await ordinary.agent("ordinary legacy role", isolation=True) == "value = 1\n"
+        assert ordinary.agent_failures == ()
+        assert factory.allocations == 2
+    finally:
+        await factory.release_isolated_envs()
+    assert base.revoked is False
+
+
+@pytest.mark.parametrize("names", [
+    ("source.txt", "target.txt"),
+    ("source file.txt", "target file.txt"),
+    ("source_\u6570\u636e.txt", "target_\u6570\u636e.txt"),
+])
+@pytest.mark.parametrize("preserved_endpoint", ["source", "target", None])
+@pytest.mark.asyncio
+async def test_candidate_rename_preserves_both_endpoints(tmp_path, names, preserved_endpoint):
+    source_name, target_name = names
+    repo = _repository(tmp_path)
+    (repo / source_name).write_text("kept content\n")
+    _git(repo, "add", "--", source_name)
+    _git(repo, "commit", "-m", "rename source")
+    workspace = EnvCandidateWorkspace(LocalEnvironment(str(repo)))
+    lease = await workspace.acquire("candidate")
+    try:
+        candidate_repo = Path(lease.candidate_workspace)
+        _git(candidate_repo, "mv", "--", source_name, target_name)
+        patch = await lease.diff()
+        assert "rename from" in patch
+        if preserved_endpoint is None:
+            await workspace.adopt(patch)
+            assert not (repo / source_name).exists()
+            assert (repo / target_name).read_text() == "kept content\n"
+        else:
+            preserved = source_name if preserved_endpoint == "source" else target_name
+            with pytest.raises(ValueError, match="preserved"):
+                await workspace.adopt(patch, preserve_paths=[preserved])
+            assert (repo / source_name).read_text() == "kept content\n"
+            assert not (repo / target_name).exists()
+    finally:
+        await lease.cleanup()

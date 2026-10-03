@@ -145,11 +145,13 @@ class FileReadTool(Tool):
         if window.chars_truncated:
             body += (
                 f"\n... requested content reached the {self.max_read_chars}-character "
-                "read limit."
+                "read limit. Try a narrower line range or grep to locate relevant "
+                "text. Reading a single line longer than this limit requires a "
+                "larger max_read_chars setting."
             )
         # Loud footer when lines remain below the shown range — otherwise a
         # default read silently stops at the limit and the tail is lost.
-        if window.has_more:
+        if window.has_more and not window.chars_truncated:
             if window.total_lines is None:
                 remaining = "more lines below (total not scanned)"
             else:
