@@ -70,6 +70,7 @@
         thinking: r.thinking != null ? r.thinking : null,
         thinkingParams: r.thinking_params != null ? r.thinking_params : null,
         profile: r.profile != null ? String(r.profile) : null,
+        budget: r.budget != null ? r.budget : null,
         tools: Array.isArray(r.tools) ? r.tools.map(String) : []
       };
     });
@@ -89,7 +90,8 @@
       badTopo: badTopo,
       toolLimits: isMap(raw.tool_limits) ? raw.tool_limits : {},
       hooks: isMap(raw.hooks) ? raw.hooks : {},
-      context: raw.context != null ? raw.context : null
+      context: raw.context != null ? raw.context : null,
+      budget: raw.budget != null ? raw.budget : null
     };
   }
   function resolveEntry(explicit, roles) {
@@ -332,6 +334,7 @@
       if (r.thinking != null) o.thinking = r.thinking;
       if (r.thinkingParams != null) o.thinking_params = r.thinkingParams;
       if (r.profile != null) o.profile = r.profile;
+      if (r.budget != null) o.budget = r.budget;
       o.tools = r.tools.slice();
       if (r.prompt) o.prompt = r.prompt;
       else if (r.promptFile) o.prompt_file = r.promptFile;
@@ -343,6 +346,7 @@
     if (Object.keys(t.toolLimits).length) out.tool_limits = t.toolLimits;
     if (Object.keys(t.hooks).length) out.hooks = t.hooks;
     if (t.context != null) out.context = t.context;
+    if (t.budget != null) out.budget = t.budget;
     return out;
   }
   function toYaml(t) {
@@ -458,7 +462,7 @@
     if (act === "edit") { editMode = !editMode; render(); return; }
     if (act === "add-role") {
       var base = "role", n = base, i = 2; while (team.roles[n]) n = base + i++;
-      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, profile: null, tools: [] };
+      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, profile: null, budget: null, tools: [] };
       render(); return;
     }
     if (act === "copy-yaml") { copy(toYaml(team), el); return; }
