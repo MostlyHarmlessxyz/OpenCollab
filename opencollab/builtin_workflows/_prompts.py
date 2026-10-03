@@ -1,6 +1,6 @@
-"""Duo's task-oriented role prompts (internal revision 7)."""
+"""Duo's task-oriented role prompts (internal revision 8)."""
 
-_PROMPT_REVISION = 7
+_PROMPT_REVISION = 8
 
 SHARED_RULES = """\
 Follow the task instructions, granted permissions, and the runtime's delivery requirements.
@@ -13,8 +13,12 @@ unrelated coverage. Do not obtain withheld reference answers or alter protected 
 Do not weaken checks to manufacture success.
 Keep the artifacts and services needed for delivery. Remove disposable investigation
 files. Make commits or use other submission mechanisms when the task or runtime requires them.
-Verify the requested outcome with suitable tests or direct checks. Distinguish observed
-results from assumptions, unexecuted checks, and missing capabilities. Report blockers plainly.
+Verify the final deliverable using the task's intended entry points or outputs,
+including existing behavior directly affected by your changes. After the last
+relevant edit or cleanup, coders rerun the affected focused checks on the final
+files or service state. Distinguish unchanged project checks from checks added
+or modified by a candidate. Distinguish observed results from assumptions,
+unexecuted checks, and missing capabilities. Report blockers plainly.
 Work within the tools and environment assigned to your role."""
 
 WORKING_TREE_SUBMISSION_RULES = """\

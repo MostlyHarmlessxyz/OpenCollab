@@ -252,7 +252,7 @@ async def test_g22_preserves_original_evidence_rejection_and_defaults_to_b(monke
         ctx, {"goal": "Preserve the public return value"},
     )
     assert outcome["judge_result"] == result
-    assert outcome["prompt_revision"] == 7
+    assert outcome["prompt_revision"] == 8
     assert outcome["winner"] == outcome["adopted"] == "B"
     assert outcome["selection_reason"] == "contract-evidence-insufficient-default-b"
     assert len(ctx.selector_calls) == 2
@@ -262,7 +262,7 @@ async def test_g22_preserves_original_evidence_rejection_and_defaults_to_b(monke
 async def test_g22_identical_candidates_keep_mechanical_selection():
     ctx = Context(identical=True)
     outcome = await g22.duo(ctx, {"goal": "Repair public behavior"})
-    assert outcome["prompt_revision"] == 7
+    assert outcome["prompt_revision"] == 8
     assert outcome["winner"] == outcome["adopted"] == "B"
     assert outcome["selection_reason"] == "identical-diff"
     assert outcome["judge_used"] is False and not ctx.selector_calls
@@ -302,22 +302,33 @@ async def test_parallel_duo_calls_keep_task_and_evidence_isolated(tmp_path, monk
 
 
 @pytest.mark.parametrize("task", [
+    "Repair the library's public API and preserve existing behavior",
     "Update the package configuration and requested snapshots",
     "Produce the requested CSV and image files",
     "Configure the application and leave its service running",
 ])
-async def test_task_oriented_prompts_preserve_the_complete_delivery_scope(task):
+@pytest.mark.parametrize("submission_mode", ["task", "working_tree"])
+async def test_task_oriented_prompts_preserve_the_complete_delivery_scope(task, submission_mode):
     ctx = Context()
-    await g22.duo(ctx, {"goal": task})
+    outcome = await g22.duo(ctx, {"goal": task, "submission_mode": submission_mode})
+    assert outcome["prompt_revision"] == 8
+    assert outcome["submission_mode"] == submission_mode
+    assert len(ctx.coder_calls) == 2
     for prompt, _ in ctx.coder_calls:
+        normalized = " ".join(prompt.split())
         assert task in prompt
         assert "configuration, dependencies" in prompt
         assert "artifacts and services" in prompt
         assert "Update public" in prompt
         assert "non-empty source diff" not in prompt
-        assert "Do not run git commit" not in prompt
+        assert ("Do not run git commit" in prompt) is (submission_mode == "working_tree")
         assert "withheld reference answers" in prompt
-    assert _prompts._PROMPT_REVISION == 7
+        assert "Verify the final deliverable using the task's intended entry points or outputs" in normalized
+        assert "existing behavior directly affected by your changes" in normalized
+        assert "After the last relevant edit or cleanup, coders rerun the affected focused checks" in normalized
+        assert "final files or service state" in normalized
+        assert "unchanged project checks from checks added or modified by a candidate" in normalized
+    assert _prompts._PROMPT_REVISION == 8
 
 
 @pytest.mark.parametrize("shared_gap", ["not_covered", "unclear"])
