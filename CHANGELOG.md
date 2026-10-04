@@ -7,6 +7,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-05
+
+### Added
+
+Team files can declare independent token budgets and context policies for each
+role. Public team inspection exposes these settings, and initial topology
+records retain each seat's model declaration. The team configuration editor
+preserves role identities, budgets, context settings, and feedback across edits
+and exports.
+
 ### Changed
 
 Every SDK run has a unique run id. A single agent and a workflow used to stamp
@@ -35,6 +45,37 @@ assuming every task is a sealed code-repair evaluation. Task-required
 configuration changes and service delivery coexist with existing-test
 protection. Explicit caller-owned working-tree capture continues to delegate
 commit and submission steps to the caller.
+
+Candidate workspaces preserve committed and uncommitted source content,
+binary patches, executable permissions, repository subdirectories, and locally
+initialized submodules. Capture and adoption detect source revisions that
+change during execution and retain concurrent source edits. Temporary capture
+material stays in the repository's private Git storage. Candidate workflows
+share the configured model concurrency allowance and return resources after
+cancellation or initialization failures.
+
+Session persistence preserves accepted submissions and waiting-turn state,
+orders manual and automatic saves, and retains message rewrites. Disk writes
+run without blocking the event loop. Summary requests support cancellation
+and contribute to session budgets, usage, and request tracing. Reusing an
+agent keeps each session's tools and submission results independent.
+
+Provider requests preserve developer message roles, connection timeouts,
+default output limits, and sampling options supported by the active reasoning
+configuration. Response handling retains refusals, tool calls paired with
+empty text, thinking usage, retryable failures, and output-limit termination.
+An empty Anthropic end turn receives one bounded continuation. Trace ownership
+and structured failure details survive caller-supplied runtimes.
+
+Duo excludes historical tests invalidated by later edits or uncertain shell
+execution from mechanical candidate comparison and retains their evidence for
+adjudication. File tools preserve raw Git paths, mathematical integer arguments,
+patch line endings, and existing file permissions. Shared Docker edit locks
+cover complete native edits and resolve equivalent paths to the same file.
+The terminal clears completed tool indicators and retains partial answers
+without displaying them twice. CLI configuration reaches the runtime, and
+single-turn failures return a failing status while keeping the result view
+available. The Typer dependency floor supports Click 8.5.
 
 ## [0.9.0] - 2026-10-02
 
@@ -342,7 +383,8 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...v0.9.0
 [0.8.4]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...v0.8.3
