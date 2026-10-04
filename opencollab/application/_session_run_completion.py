@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -563,7 +564,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=getattr(self.agent, "thinking", False)
         )
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
         if reasoning_effort is not None:
@@ -622,12 +623,30 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             max_output_tokens = min(max_output_tokens, output_budget)
         return max_output_tokens
 
+    def _completion_accepts_output_limit(self) -> bool:
+        """Include the default limit when the injected completion accepts it."""
+        try:
+            parameters = inspect.signature(self.llm.complete).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            or (
+                parameter.name == "max_output_tokens"
+                and parameter.kind in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+            )
+            for parameter in parameters
+        )
+
     async def _invoke_summary(
         self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
     ) -> CompletionResponse:
         """Reserve, own and charge a summary call exactly once."""
         max_output_tokens = self._request_output_limit(messages, None, thinking=False)
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()
         protected_call = self.state.wind_down_done
