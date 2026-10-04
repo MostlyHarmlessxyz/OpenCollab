@@ -25,11 +25,14 @@ def _workflow_manifest_payload(
     reason: str | None,
     failure_type: str | None,
     evidence_complete: bool,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Freeze all event-loop-owned values used by the workflow manifest."""
     return copy.deepcopy(
         {
             "workflow": name,
+            # Runtime identity survives when optional trajectory output is off.
+            "run_id": run_id if run_id is not None else getattr(tracer, "run_id", None),
             "args": args,
             "sessions": len(ctx.sessions),
             "tokens_spent": ctx.budget.spent(),
