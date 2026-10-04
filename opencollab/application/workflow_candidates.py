@@ -347,6 +347,11 @@ class WorkflowCandidatesMixin:
                     deadline_margin_seconds=self._deadline_margin_seconds,
                     workspace_root=workspace if isinstance(workspace, str) else None,
                 )
+                # Candidate workflows are orchestration containers, not agent
+                # sessions. Their child contexts must draw every actual session
+                # from the parent's cap, without the candidate wrapper holding a
+                # slot and reducing child parallelism (or deadlocking at one).
+                child._semaphore = self._semaphore
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
@@ -441,7 +446,7 @@ class WorkflowCandidatesMixin:
                 )
             return candidate
 
-        return await self._run_with_concurrency_permit(run)
+        return await run()
 
     async def adopt_candidate(
         self,
