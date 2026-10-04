@@ -77,6 +77,8 @@ class SubmitTool(Tool):
             )
         self.submitted_summary = summary.strip()
         self.turn_submitted = True
+        if runtime is not None and runtime.observations is not None:
+            runtime.observations.record_submission(self.submitted_summary)
         return "Submitted. Your turn ends here."
 
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from opencollab.adapters.git_patch import _git_command_and_config_guard
 from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
@@ -27,6 +28,18 @@ from opencollab.application.tool_execution import ToolRuntime
 MAX_DIFF_CHARS = 8_000
 MAX_STATUS_CHARS = 2_000
 MAX_UNTRACKED_DIFF_FILES = 50
+
+
+class _GitConfigurationRejected(Exception):
+    pass
+
+
+async def _read_git(environment: Any, command: str) -> Any:
+    git, guard = _git_command_and_config_guard()
+    result = await environment.exec_cmd(f"{guard}{git} --no-pager {command}", timeout=30)
+    if result.returncode == 125:
+        raise _GitConfigurationRejected(result.stderr or result.stdout or "repository configuration rejected")
+    return result
 
 
 class GitDiffTool(Tool):
@@ -86,6 +99,16 @@ class GitDiffTool(Tool):
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
+        try:
+            return await self._execute(params, runtime)
+        except _GitConfigurationRejected as exc:
+            return "Error reading Git repository:\n" + truncate(str(exc).strip(), self.max_status_chars)
+
+    async def _execute(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         path = params.get("path")
         staged = params.get("staged", False)
         stat_only = params.get("stat_only", False)
@@ -97,19 +120,16 @@ class GitDiffTool(Tool):
 
         pathspec = f" -- {shlex.quote(path)}" if path else ""
 
-        diff_cmd = "git --no-pager diff"
+        diff_cmd = "diff --no-ext-diff --no-textconv"
         baseline_label = "HEAD"
         if staged:
             diff_cmd += " --cached"
         else:
-            head = await env.exec_cmd("git rev-parse --verify HEAD", timeout=30)
+            head = await _read_git(env, "rev-parse --verify HEAD")
             if head.returncode == 0:
                 baseline = "HEAD"
             else:
-                inside = await env.exec_cmd(
-                    "git rev-parse --is-inside-work-tree",
-                    timeout=30,
-                )
+                inside = await _read_git(env, "rev-parse --is-inside-work-tree")
                 if inside.returncode != 0 or inside.stdout.strip() != "true":
                     capture = getattr(env, "get_filesystem_diff", None)
                     if callable(capture):
@@ -118,10 +138,7 @@ class GitDiffTool(Tool):
                             observed, self.max_diff_chars
                         )
                     return "Error: not a git repository."
-                empty_tree = await env.exec_cmd(
-                    "git hash-object -t tree /dev/null",
-                    timeout=30,
-                )
+                empty_tree = await _read_git(env, "hash-object -t tree /dev/null")
                 baseline = empty_tree.stdout.strip()
                 if empty_tree.returncode != 0 or not baseline:
                     error = (empty_tree.stderr or empty_tree.stdout).strip()
@@ -135,7 +152,7 @@ class GitDiffTool(Tool):
             diff_cmd += " --stat"
         diff_cmd += pathspec
 
-        diff_result = await env.exec_cmd(diff_cmd, timeout=30)
+        diff_result = await _read_git(env, diff_cmd)
         if diff_result.returncode != 0:
             err = (diff_result.stderr or diff_result.stdout).strip()
             if "not a git repository" in err.lower():
@@ -145,10 +162,10 @@ class GitDiffTool(Tool):
         untracked_parts: list[str] = []
         if not staged:
             untracked_cmd = (
-                "git --no-pager status --porcelain=v1 -z --untracked-files=all"
+                "status --porcelain=v1 -z --untracked-files=all"
                 + pathspec
             )
-            untracked_result = await env.exec_cmd(untracked_cmd, timeout=30)
+            untracked_result = await _read_git(env, untracked_cmd)
             if untracked_result.returncode != 0:
                 error = (untracked_result.stderr or untracked_result.stdout).strip()
                 return "Error enumerating untracked files:\n" + truncate(
@@ -160,14 +177,27 @@ class GitDiffTool(Tool):
                 for entry in untracked_result.stdout.split("\0")
                 if entry.startswith("?? ")
             ]
+            git_root = ""
+            if untracked_paths:
+                root_result = await _read_git(env, "rev-parse --show-toplevel")
+                git_root = root_result.stdout.rstrip("\n")
+                if root_result.returncode != 0 or not git_root:
+                    error = (root_result.stderr or root_result.stdout).strip()
+                    return "Error locating the Git root for untracked files:\n" + truncate(
+                        error, self.max_status_chars,
+                    )
             for untracked_path in untracked_paths[:MAX_UNTRACKED_DIFF_FILES]:
-                untracked_diff_cmd = "git --no-pager diff --no-index"
+                # Porcelain paths are rooted at the repository, including when
+                # the execution environment's workspace is a subdirectory.
+                untracked_diff_cmd = (
+                    f"-C {shlex.quote(git_root)} diff --no-index --no-ext-diff --no-textconv"
+                )
                 if stat_only:
                     untracked_diff_cmd += " --stat"
                 untracked_diff_cmd += (
                     f" -- /dev/null {shlex.quote(untracked_path)}"
                 )
-                untracked_diff = await env.exec_cmd(untracked_diff_cmd, timeout=30)
+                untracked_diff = await _read_git(env, untracked_diff_cmd)
                 if untracked_diff.returncode not in {0, 1}:
                     error = (untracked_diff.stderr or untracked_diff.stdout).strip()
                     untracked_parts.append(
@@ -190,7 +220,7 @@ class GitDiffTool(Tool):
 
         parts: list[str] = []
         if include_status:
-            status_result = await env.exec_cmd("git --no-pager status --short", timeout=30)
+            status_result = await _read_git(env, "status --short")
             status = status_result.stdout.strip()
             parts.append(
                 "Status (git status --short):\n" + truncate(status, self.max_status_chars)

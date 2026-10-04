@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 
 from opencollab.domain.pending import PendingEventTable
+from opencollab.domain.tool_loops import LoopState
 
 MAX_SCOUT_LEDGER_CARDS = 256
 
@@ -133,6 +134,10 @@ class TurnEnforcementState:
     # Loop-detection window: path-normalized (tool, args) hashes of recent tool
     # calls; drives the repeated-call loop block.
     recent_call_hashes: list[str] = field(default_factory=list)
+    loop_state: LoopState = field(default_factory=LoopState)
+    # Unknown write outcomes avoid steering that assumes a known unchanged workspace.
+    write_effect_unknown: bool = False
+    last_progress_unknown: bool = False
     # Closed-loop steering signal: read-only tool calls (file_read/grep) since
     # the last successful edit. Drives the reads-without-write nudge/escalation;
     # reset to 0 on a successful write.
@@ -172,6 +177,7 @@ class _UserTurnCheckpoint:
     terminal_reason: str | None
     pending_external_user_turn: dict[str, Any] | None
     pending_step_latency: float | None
+    submitted_summary: str | None
     # The per-turn enforcement window, snapshotted and rolled back as one unit.
     turn: TurnEnforcementState
     wind_down_done: bool
@@ -245,6 +251,8 @@ class SessionState:
     # Elapsed provider/tool time for a deferred step whose process-local
     # PendingStep response was released while waiting for child results.
     pending_step_latency: float | None = None
+    # Accepted completion for a turn still waiting on earlier deferred tools.
+    submitted_summary: str | None = None
 
     def __post_init__(self) -> None:
         self._align_timestamps()
@@ -291,7 +299,7 @@ class SessionState:
     def enriched_pending_user_messages(self) -> list[dict[str, Any]]:
         return [dict(message) for message in self.pending_user_messages]
 
-    def append_queued_external_user_turn(self, content: str) -> None:
+    def append_queued_external_user_turn(self, content: str, *, defer: bool = False) -> None:
         """Atomically mark and append a public user turn awaiting its driver."""
         pending = {
             "turn_id": uuid.uuid4().hex,
@@ -299,12 +307,16 @@ class SessionState:
             "content": content,
         }
         self.pending_external_user_turn = pending
+        if defer:
+            return
         self.append_message({"role": "user", "content": content})
         pending["message_index"] = len(self.messages) - 1
 
     def consume_queued_external_user_turn(self) -> None:
         """Mark a queued external turn as claimed by the current runner."""
         if self.pending_external_user_turn is not None:
+            if "message_index" not in self.pending_external_user_turn:
+                self.append_message({"role": "user", "content": self.pending_external_user_turn["content"]})
             self.pending_external_user_turn = None
 
     def start_active_turn(self, message_index: int) -> None:
@@ -315,6 +327,7 @@ class SessionState:
         """Discard a turn boundary once that turn reaches a terminal phase."""
         self.active_turn_start_message_index = None
         self.pending_step_latency = None
+        self.submitted_summary = None
 
     @property
     def is_done(self) -> bool:
@@ -425,6 +438,7 @@ class SessionState:
             terminal_reason=self.terminal_reason,
             pending_external_user_turn=copy.deepcopy(self.pending_external_user_turn),
             pending_step_latency=self.pending_step_latency,
+            submitted_summary=self.submitted_summary,
             # Deep-copy the whole per-turn window as one pristine, reusable unit.
             turn=copy.deepcopy(self.turn),
             wind_down_done=self.wind_down_done,
@@ -442,6 +456,7 @@ class SessionState:
             checkpoint.pending_external_user_turn
         )
         self.pending_step_latency = checkpoint.pending_step_latency
+        self.submitted_summary = checkpoint.submitted_summary
         # A fresh copy each restore, so the checkpoint stays reusable.
         self.turn = copy.deepcopy(checkpoint.turn)
         self.wind_down_done = checkpoint.wind_down_done
@@ -465,6 +480,7 @@ class SessionState:
         self.wind_down_attempts = 0
         self.wind_down_token_mark = 0
         self.pending_step_latency = None
+        self.submitted_summary = None
 
     def record_evidence_signal(
         self,
@@ -525,7 +541,13 @@ class SessionState:
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
         self.turn.recent_call_hashes.append(call_hash)
         if max_window is not None and len(self.turn.recent_call_hashes) > max_window:
+            expired = self.turn.recent_call_hashes[:-max_window]
             self.turn.recent_call_hashes = self.turn.recent_call_hashes[-max_window:]
+            for key in expired:
+                if key in self.turn.loop_state.operations and key not in self.turn.recent_call_hashes:
+                    operation = self.turn.loop_state.operations.get(key)
+                    if operation is not None and operation.inflight_tool_call_id is None:
+                        self.turn.loop_state.operations.pop(key, None)
 
     def replace_recent_tool_hashes(self, call_hashes: list[str]) -> None:
         self.turn.recent_call_hashes = call_hashes

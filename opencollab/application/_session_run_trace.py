@@ -12,7 +12,7 @@ from opencollab.application.steering import READS_NUDGE_SOFT
 class _SessionRunTraceMixin:
     """Observation helpers composed into session completion."""
 
-    def _shape_and_trace(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _shape_and_trace(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Shape the model's view, recording which compaction rung really fired.
 
         The shapers reshape a COPY (the transcript keeps the full history), so
@@ -26,8 +26,6 @@ class _SessionRunTraceMixin:
         The pipeline stays a pure transform: it only reports, and the sink
         lives here, where ``tracer``/``aid``/``step_count`` are already at hand.
         """
-        if self.tracer is None:
-            return self.shaper.shape(messages) if self.shaper is not None else messages
         # A ShaperPipeline names its own rungs; wrap anything else (a single
         # shaper, or nothing wired at all) so every turn still reports.
         pipeline = (
@@ -35,7 +33,9 @@ class _SessionRunTraceMixin:
             if isinstance(self.shaper, ShaperPipeline)
             else ShaperPipeline(() if self.shaper is None else (self.shaper,))
         )
-        shaped, reports = pipeline.shape_with_report(messages)
+        if self.tracer is None:
+            return await pipeline.ashape(messages)
+        shaped, reports = await pipeline.ashape_with_report(messages)
         for report in reports:
             self.tracer.log_step(
                 step_type="context_shaping",
@@ -83,7 +83,7 @@ class _SessionRunTraceMixin:
             )
         self._last_steering_level = level  # update high-water mark even with no tracer
 
-    def record_llm_trace(self, response: CompletionResponse, latency: float) -> None:
+    def record_llm_trace(self, response: CompletionResponse, latency: float, *, purpose: str | None = None) -> None:
         if self.tracer:
             tool_calls_log = None
             if response.tool_calls:
@@ -112,7 +112,15 @@ class _SessionRunTraceMixin:
                 or self.agent.model,
                 "session_step": self.state.step_count,
                 "response_session_id": self._response_session_id,
+                "request_tool_names": list(self._last_request_tool_names),
+                "request_tool_choice": self._last_request_tool_choice,
+                "request_observation_stage": "application",
             }
+            if purpose is not None:
+                payload["purpose"] = purpose
+            if purpose == "summary":
+                payload["request_tool_names"] = []
+                payload["request_tool_choice"] = None
             if usage is not None:
                 output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
                 cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
@@ -145,7 +153,7 @@ class _SessionRunTraceMixin:
                 # Mark the gap between billed reasoning and returned content
                 # so trajectory readers can identify withheld reasoning.
                 payload["reasoning_withheld"] = True
-            payload["thinking"] = bool(getattr(self.agent, "thinking", False))
+            payload["thinking"] = purpose != "summary" and bool(getattr(self.agent, "thinking", False))
             wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
             if wire_protocol != "chat_completions":
                 payload["wire_protocol"] = wire_protocol
@@ -160,6 +168,7 @@ class _SessionRunTraceMixin:
             provider_model = getattr(response, "provider_model", None)
             if provider_model is not None:
                 payload["provider_model"] = provider_model
+            payload["transport_timing"] = getattr(response, "transport_timing", None)
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,

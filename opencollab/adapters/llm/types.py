@@ -64,6 +64,12 @@ class LLMResponse:
     # The application stores it without interpreting it, and each provider
     # removes data that does not belong on its request path.
     provider_state: dict[str, Any] | None = None
+    # When the first token of this response arrived, or why nobody could see it
+    # (``adapters.llm.first_token``). Filled by ``LLMClient.complete`` after the
+    # provider returns, so it is set on every arm's path and on none of the
+    # provider modules' own return contracts. ``None`` means the response was
+    # built outside the client (a test double, a replayed fixture).
+    transport_timing: dict[str, Any] | None = None
 
 
 def to_plain_data(value: Any) -> Any:
@@ -139,6 +145,7 @@ class ModelCapabilities:
     supports_responses_sampling: bool = True
     supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
+    requires_chat_reasoning_content: bool = False
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -160,6 +167,18 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek-flash": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-pro": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-reasoner": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
     "o1-pro": ModelCapabilities(
         context_window=200_000,
         supports_responses_streaming=False,
@@ -199,9 +218,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     # The endpoint's model_info payload on 2026-09-21 reported 1,000,000 for
     # context_window, max_input_tokens and reasoning_max_input_tokens. This
-    # entry records that input window; other dimensions retain their defaults.
+    # entry records that input window. Thinking tool continuations also need
+    # the recorded Chat reasoning returned with the assistant tool call.
     "deepseek-v4.1-flash": ModelCapabilities(
         context_window=1_000_000,
+        requires_chat_reasoning_content=True,
     ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
@@ -209,6 +230,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_responses_json_schema=True,
         supports_responses_reasoning=True,
         honors_workflow_thinking_override=False,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-v4-pro": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,
@@ -260,24 +286,40 @@ def _is_responses_reasoning_family(model: str) -> bool:
 
 
 def _is_responses_sampling_restricted_family(model: str) -> bool:
-    """Return families known to reject Responses sampling controls.
-
-    GPT-5 variants support the Responses reasoning fields while retaining the
-    sampling controls used by the existing adapter contract.  The older o1/o3
-    reasoning families are the ones for which sampling is known to be
-    unsupported; keep that dimension independent from reasoning detection.
-    """
+    """Return provider-independent families with unsupported sampling controls."""
 
     leaf = model.strip().lower().rsplit("/", 1)[-1]
     return re.match(r"^o[134](?:$|[-.])", leaf) is not None
 
 
+def responses_sampling_supported(
+    model: str,
+    reasoning_effort: str | None = None,
+    *,
+    native_openai: bool = True,
+) -> bool:
+    """Resolve Responses sampling against the model, effort, and provider."""
+    if not model_capabilities(model).supports_responses_sampling:
+        return False
+    if not native_openai:
+        return True
+    # Only documented native IDs and their dated snapshots use these rules.
+    # Compatible providers retain the capabilities of their own endpoints.
+    dated = r"(?:-\d{4}-\d{2}-\d{2})?"
+    if re.fullmatch(rf"gpt-5(?:-mini|-nano)?{dated}", model):
+        return False
+    # GPT-5.1, GPT-5.2, and GPT-5.4 all document none as their default effort.
+    if re.fullmatch(rf"gpt-5\.(?:1|2|4){dated}", model):
+        return reasoning_effort in (None, "none")
+    return True
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
     """Return exact capability metadata plus a best-effort context window.
 
-    Capability dimensions are intentionally independent.  Known ``o1``/``o3``
-    /``o4`` families fail closed for sampling while GPT-5 variants retain the
-    existing sampling contract even though they opt in to Responses reasoning.
+    Capability dimensions are intentionally independent. Known ``o1``/``o3``
+    /``o4`` families reject sampling. Native GPT-5 sampling additionally depends
+    on the precise model and effort through ``responses_sampling_supported``.
     Streaming and function-tool support stay at their neutral defaults until a
     provider contract explicitly confirms them; an unknown dimension must not
     be inferred from reasoning support.

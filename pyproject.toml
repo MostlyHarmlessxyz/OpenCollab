@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling==1.32.3"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "opencollab"
-version = "0.8.2"
+version = "0.9.0"
 description = "Minimal multi-agent software development framework for explicit team and workflow orchestration."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,8 +28,8 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.99.2",
-    "anthropic>=0.78",
-    "typer>=0.12",
+    "anthropic>=0.78,<1",
+    "typer>=0.18.0",
     "rich>=13.0",
     "prompt-toolkit>=3.0",
     "filelock>=3.15",

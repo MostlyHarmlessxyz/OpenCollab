@@ -24,6 +24,10 @@ class _ContextOverflowStop(Exception):
     """
 
 
+class _TeamBudgetStop(Exception):
+    """Internal signal that shared team allowance ran out before a request."""
+
+
 class _TokenBudgetStop(Exception):
     """Internal signal that a request has no reserved output headroom."""
 
@@ -69,6 +73,22 @@ _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 _READ_TOOLS = frozenset({"file_read", "grep"})
 _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 _STRUCTURED_OUTPUT_TOOL = "structured_output"
+
+
+def _request_tool_names(tools: list[dict] | None) -> list[str]:
+    """Sorted names of the tool schemas one request carries.
+
+    Names only. The schema bodies are already recorded once per seat by
+    ``assigned.topology_nodes``; repeating them on every call would multiply the
+    trajectory for nothing, while the names alone answer the question the record
+    is for -- which tools this particular request offered.
+    """
+    return sorted(
+        str(name)
+        for spec in (tools or [])
+        if isinstance(spec, dict)
+        and (name := spec.get("function", {}).get("name")) is not None
+    )
 
 # Enforcement strength (STEP 0). ``off`` is the self-regulating default: every
 # wind-down branch below is gated on enforcement being on, so with ``off`` the

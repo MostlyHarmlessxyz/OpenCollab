@@ -192,7 +192,8 @@ class _RendererEventsMixin:
             state = self._state_for(aid)
             label = f"{agent_label}:spawn"
             completed_spawn = label in state.active_tools
-            state.active_tools.pop(label, None)
+            state.active_tools.clear()
+            self._clear_thinking_status(state)
             self._mark_roster(aid, role, "idle")
             latency = event.data.get("latency", 0.0)
             # The lead (aid 0) finishing IS the turn boundary — the stats footer
@@ -220,7 +221,8 @@ class _RendererEventsMixin:
             state = self._state_for(aid)
             label = f"{agent_label}:spawn"
             failed_spawn = label in state.active_tools
-            state.active_tools.pop(label, None)
+            state.active_tools.clear()
+            self._clear_thinking_status(state)
             self._mark_roster(aid, role, "failed")
             error = event.data.get("error", "unknown")
             activity = f"{label} failed" if failed_spawn else f"{agent_label} failed"
@@ -236,7 +238,8 @@ class _RendererEventsMixin:
             state = self._state_for(aid)
             label = f"{agent_label}:spawn"
             cancelled_spawn = label in state.active_tools
-            state.active_tools.pop(label, None)
+            state.active_tools.clear()
+            self._clear_thinking_status(state)
             self._mark_roster(aid, role, "cancelled")
             activity = f"{label} cancelled" if cancelled_spawn else f"{agent_label} cancelled"
             self._append_activity(
@@ -340,6 +343,7 @@ class _RendererEventsMixin:
         if not target.current_text:
             return
         block = self._assistant_block(Markdown(target.current_text))
+        target.turn_has_text = True
         target.current_text = ""
         self._append_history_block(target, block)
         self._drain_pending(self._aid_of(target))

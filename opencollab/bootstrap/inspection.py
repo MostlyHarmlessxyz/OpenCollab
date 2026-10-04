@@ -10,9 +10,11 @@ from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
 
 
-def configured_model_client(config: Mapping[str, Any]) -> LLMClient:
+def configured_model_client(
+    config: Mapping[str, Any], *, client_type: type[Any] | None = None,
+) -> Any:
     """Create an independently owned transport with the resolved configuration."""
-    return LLMClient(
+    return (client_type or LLMClient)(
         model=config["model"],
         provider=config["provider"],
         api_key=config.get("api_key"),
@@ -24,6 +26,7 @@ def configured_model_client(config: Mapping[str, Any]) -> LLMClient:
         connect_timeout=config.get("llm_connect_timeout", 30.0),
         first_event_timeout=config.get("llm_first_event_timeout", 180.0),
         stream_idle_timeout=config.get("llm_stream_idle_timeout", 180.0),
+        stream_chat=bool(config.get("llm_stream_chat", False)),
         provider_error_time_budget=config.get("provider_error_time_budget", 0.0),
     )
 

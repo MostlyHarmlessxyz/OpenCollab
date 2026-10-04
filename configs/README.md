@@ -54,6 +54,26 @@ API-key fallback is provider and endpoint specific:
 Keys from another provider are not used as fallbacks. Process-environment
 values beat the same variable in an env file, and blank values are ignored.
 
+## Streaming chat completions
+
+`OPENCOLLAB_LLM_STREAM_CHAT=true` consumes OpenAI-compatible chat completions
+as a stream. It is off by default, and off means the request body is exactly
+the one the non-streaming path has always sent — neither `stream` nor
+`stream_options` is added — so runs recorded before and after this setting
+existed remain comparable.
+
+Turn it on to record the model's reasoning: several endpoints, DeepSeek among
+them, return `reasoning_content` **only** over the streamed format, so a
+non-streamed request pays for the thinking and receives none of the text.
+While streaming, recorded reasoning is kept out of the outbound history: it
+reaches the trajectory, but is not echoed back to the model on the next turn.
+
+Streaming reuses `OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT` and
+`OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT` (both 180s) — the request timeout only
+bounds a single socket read once a response is streamed. A stream that ends
+without a `finish_reason`, or one whose endpoint reports no token usage, is
+an error rather than a silently partial answer.
+
 ## Model capability metadata
 
 Compatibility differences are recorded in
@@ -139,24 +159,50 @@ OPENCOLLAB_FILTER_MESSAGES=true
 ## Team
 
 Define a multi-agent team in a YAML file. The file can set role prompts, model
-and temperature overrides, tool allowlists, and the directed spawn and message
-topology.
+and temperature overrides, tool allowlists, each role's token allowance, the
+context policy every session runs, and the directed spawn and message topology.
 
 ```bash
 cp configs/team.example.yaml configs/team.yaml
 uv run opencollab --team-config configs/team.yaml --workspace .
 ```
 
-OpenCollab selects a team through these inputs, in priority order.
+CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)` selects an
+explicit team first. Otherwise, OpenCollab reads the process environment
+variable `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`. The fallback is the built-in
+Self-Collaboration team with an `analyst` entry, a `coder`, and a `tester`.
 
-1. CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)`
-2. Process environment variable `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`
-3. The built-in single `lead` configuration
+The built-in topology allows the Analyst to spawn the Coder and Tester. The
+Coder and Tester each work within their own tool bundle. To add a role such as
+`reviewer`, declare it and its topology edges in a team file, then select that
+file through one of the explicit inputs. See `team.example.yaml` for the schema.
+A selected file that is missing or unsafe raises an error.
 
-Select `configs/team.yaml` through one of these inputs to activate it. With no
-selected team file, the built-in `lead` may spawn any ad-hoc role. See
-`team.example.yaml` for the schema (lead/analyst/coder/reviewer plus a
-`topology` graph). A selected file that is missing or unsafe raises an error.
+Two optional entries hold a team's resources fixed in the file rather than at
+the call site:
+
+- `budget: { tokens: N }`, at the top level or on a role, gives each role its
+  own token allowance. Allowances are independent: each agent is held to its
+  own, and the team's total is their sum. Once one role has an allowance every
+  role must, the roster must be prebuilt, and a run that is also handed a
+  `budget` refuses to start. Without the entry, the team shares one pool.
+- `context:` names the context policy. `default`, the value when omitted, is
+  the full compaction pipeline; `no_history_compaction` keeps only the cap on
+  each tool result, which `tool_result_budget` can set.
+
+A Team run's trajectory opens with the declared organization: every role with
+its model, tools and allowance, and every edge, so a role that never acts still
+appears. A run started with `team()` gets its own `run_id`, which its
+trajectory, `team.json` and the result's metrics share. `opencollab.teams` reads the same facts from a file
+before a run (`declared_role_budgets`, `declared_context_policy`).
+
+`team.collab.yaml` is a ready-made three-role team (Analyst, Coder, Tester) that
+hands work over rather than doing it in one seat, with every role prompt inline.
+It requires a prebuilt roster, which the CLI cannot ask for: started through
+`uv run opencollab --team-config`, it seats the Analyst alone and produces a
+solo run that reads like a team's. Run it with `scripts/run_collab_team.py`, the
+SDK (`prebuild_team=True`), or the evaluation harness. See
+[the team handoff](../docs/2026-08-31-collab-team.md).
 
 ## Validation
 

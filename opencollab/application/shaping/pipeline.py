@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Iterator
 
 from opencollab.application.ports import ShaperPort
@@ -98,6 +98,13 @@ def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
     state included, so a thinking-heavy history is not read as shorter here
     than the budget check reads it. The once-per-request framing allowance is
     excluded because a constant term would break additivity.
+
+    Deliberately keeps ``keep_reasoning_content`` at its default (True), unlike
+    the pre-call budget reservation, which drops recorded reasoning when
+    streaming strips it from the outbound request. This is a compaction
+    threshold, not a reservation: the recorded reasoning still occupies the
+    local history that compaction is sizing, and shrinking the estimate here
+    would move every arm's compaction trigger. See ``test_shaping_pipeline``.
     """
     return estimate_request_message_tokens(messages)
 
@@ -167,6 +174,41 @@ class ShaperPipeline:
         for shaper in self._shapers:
             result = shaper.shape(result)
         return result
+
+    async def ashape(self, messages: list[dict[str, Any]], *, force: bool = False) -> list[dict[str, Any]]:
+        with _forced_layers(self) if force else nullcontext():
+            result = messages
+            for shaper in self._shapers:
+                ashape = getattr(shaper, "ashape", None)
+                result = await ashape(result) if callable(ashape) else shaper.shape(result)
+        return result
+
+    async def ashape_with_report(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Await model-backed rungs while preserving synchronous shaper support."""
+        result = messages
+        reports: list[dict[str, Any]] = []
+        tokens = approx_messages_tokens(result)
+        for shaper in self._shapers:
+            before = result
+            if isinstance(shaper, ShaperPipeline):
+                result, nested = await shaper.ashape_with_report(result)
+                entries = [entry for entry in nested if entry["rung"] != _NO_RUNG_FIRED]
+            else:
+                ashape = getattr(shaper, "ashape", None)
+                result = await ashape(result) if callable(ashape) else shaper.shape(result)
+                entries = (
+                    [{"rung": _rung_label(shaper), "tokens_before": tokens,
+                      "tokens_after": approx_messages_tokens(result)}]
+                    if result != before else []
+                )
+            if result != before and entries:
+                reports.extend(entries)
+                tokens = entries[-1]["tokens_after"]
+        if not reports:
+            reports.append({"rung": _NO_RUNG_FIRED, "tokens_before": tokens, "tokens_after": tokens})
+        return result, reports
 
     def shape_with_report(
         self, messages: list[dict[str, Any]]

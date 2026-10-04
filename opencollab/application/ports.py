@@ -91,7 +91,7 @@ class CandidateWorkspaceLeasePort(Protocol):
 
     environment: EnvironmentPort
 
-    async def diff(self) -> str: ...
+    async def diff(self, exclude_paths: Sequence[str] = ()) -> str: ...
 
     async def cleanup(self) -> None: ...
 
@@ -312,7 +312,9 @@ class WorkflowSessionFactoryPort(Protocol):
         """Execute one verification tool without creating an LLM session."""
         ...
 
-    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
+    async def acquire_isolated_env(
+        self, *, label: str | None = None, environment: EnvironmentPort | None = None
+    ) -> Any:
         """Hand out a workspace of this agent's own, for ``isolation=True``.
 
         Separate from ``build_workflow_session`` because acquiring one is I/O —
@@ -444,6 +446,15 @@ class CompletionResponse(Protocol):
         """Provider-confirmed model identity, if the wire protocol reports it."""
         ...
 
+    @property
+    def transport_timing(self) -> dict[str, Any] | None:
+        """When this response's first protocol event arrived, or why it was unmeasured.
+
+        Optional, like ``reasoning``: implementations may omit it and the run
+        loop reads it defensively via ``getattr``.
+        """
+        ...
+
 
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
@@ -462,6 +473,21 @@ class LLMPort(Protocol):
         max_output_tokens: int | None = None,
         response_session_id: str | None = None,
     ) -> CompletionResponse:
+        ...
+
+
+@runtime_checkable
+class RequestTokenEstimatorPort(Protocol):
+    """Optional provider-aware input reservation for adapted request history."""
+
+    def estimate_request_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
         ...
 
 

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from opencollab.adapters.llm import LLMClient
 from opencollab.bootstrap.config import build_config
+from opencollab.bootstrap.inspection import configured_model_client
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 DEFAULT_PROMPT = "Reply with one short sentence confirming provider connectivity."
@@ -17,6 +18,8 @@ DEFAULT_PROMPT = "Reply with one short sentence confirming provider connectivity
 
 class CompletionClient(Protocol):
     async def complete(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any: ...
+
+    async def close(self) -> None: ...
 
 
 async def request_completion(
@@ -29,22 +32,19 @@ async def request_completion(
     config = build_config(str(workspace))
     if not config.api_key:
         raise ValueError("provider API key is missing from the OpenCollab configuration")
-    client = client_type(
-        model=config.model,
-        provider=config.provider,
-        api_key=config.api_key,
-        base_url=config.base_url,
-        request_timeout=config.llm_timeout,
-    )
-    response = await client.complete(
-        [
-            {"role": "system", "content": "You are a concise connectivity probe."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.0,
-        max_output_tokens=min(config.max_output_tokens, 256),
-    )
-    return str(response.content or "")
+    client = configured_model_client(config.model_dump(), client_type=client_type)
+    try:
+        response = await client.complete(
+            [
+                {"role": "system", "content": "You are a concise connectivity probe."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_output_tokens=min(config.max_output_tokens, 256),
+        )
+        return str(response.content or "")
+    finally:
+        await client.close()
 
 
 def _parser() -> argparse.ArgumentParser:

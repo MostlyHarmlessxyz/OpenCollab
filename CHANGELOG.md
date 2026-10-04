@@ -7,12 +7,99 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+Duo V8 asks coders to verify the final deliverable through the task's intended
+entry points or outputs, check directly affected existing behavior, and rerun
+focused checks after the last relevant edit or cleanup. Shared task-oriented
+instructions distinguish unchanged project checks from candidate-added or
+modified checks. Results report `prompt_revision=8` for both submission modes.
+
 ### Fixed
 
-- Duo V6 accepts a changed-path-supported coverage advantage over an unclear
-  alternative, so a supported adjudicator recommendation reaches candidate
-  adoption. Explicit coverage losses, incomplete inventories, missing evidence,
-  and ties retain their existing rejection or fallback behavior.
+Workflow role failures retain bounded, message-free exception chains, and sticky
+trajectory write failures preserve their original OS error code across the public
+API. Evaluation callers can distinguish storage exhaustion from a failed solver
+without parsing private error messages.
+
+Single2 follows the task's permissions and delivery requirements instead of
+assuming every task is a sealed code-repair evaluation. Task-required
+configuration changes and service delivery coexist with existing-test
+protection. Explicit caller-owned working-tree capture continues to delegate
+commit and submission steps to the caller.
+
+## [0.9.0] - 2026-10-02
+
+### Added
+
+Optional Chat Completions streaming assembles text, reasoning, and tool-call
+fragments with first-event and stream-idle timeouts. Request observations expose
+transport timing and retry counts. Public model inspection supports offline
+configuration queries.
+
+Team roles can select explicit agent profiles, use unbounded step limits, and
+inspect their declared tools and prompts through public APIs. Optional delivery
+snapshots record the worktree associated with each role's execution. The adopt
+tool is available to explicitly configured roles. Patch application offers
+opt-in hunk normalization and unique expected-text relocation.
+
+The complete ICLR integration adds team, handoff, dual-candidate, and research
+configurations with their supporting scripts, tests, and source documentation.
+
+### Fixed
+
+Session restoration preserves completed tool results and maintains message
+ordering across cancellation, pending child tasks, and new user input. Request
+budget estimates follow the actual transmitted history and its model-specific
+reasoning fields.
+
+### Changed
+
+The integration retains the Base profile, Duo V7 workflow, and the execution-fact
+loop detection and candidate budget inheritance released in 0.8.4. Streaming,
+delivery-tree recording, and patch normalization remain explicit opt-ins.
+Anthropic SDK compatibility is constrained to supported pre-1.0 releases.
+
+## [0.8.4] - 2026-10-01
+
+### Fixed
+
+Loop detection records native execution and edit facts separately from rendered
+tool output. Confirmed edits permit a bounded revalidation of older operations,
+and real timeouts permit one longer retry within the retained call window.
+Unchanged overwrites preserve their physical write behavior while contributing
+no content-change progress. Three unproductive blocked model batches stop a
+session, allowing feedback between batches while retaining per-call blocking.
+Consumed retry permissions and completed prefix results survive session saves.
+
+Candidate subworkflows inherit the budget approved by the parent allocator,
+including remaining-pool caps and concurrent shares. Explicit unbounded mode
+continues to propagate unlimited token and step budgets.
+
+## [0.8.3] - 2026-10-01
+
+### Fixed
+
+Duo V7 compares each candidate's concrete behavior against public requirements,
+with changed-path evidence for the input, trigger, control flow and expected
+output. Equivalent evidence and identical diffs select B, while demonstrated
+coverage advantages and explicit missing requirements can still select A.
+Unusable adjudications receive at most one targeted review before the default-B
+choice, preserving A when the evidence establishes a requirement missing in B.
+Comparison payloads within 128,000 UTF-8 bytes provide both full diffs, all
+individual and shared public-test records, and reports marked as model-supplied
+inline for a complete structured decision. Larger payloads use complete paged
+evidence reads. Original evidence files are retained in both modes.
+
+File-read loop detection distinguishes pagination ranges while normalizing
+equivalent default arguments. Worktree cleanup remains retryable after a partial
+failure, and command-line configuration errors retain their useful diagnostics.
+Duo working-tree mode delegates final commits and packaging to its caller.
+
+### Changed
+
+The documentation covers the 0.8.x APIs, Base profile, Duo workflow and benchmark
+usage. Distribution builds use Hatchling 1.32.4, and CI uses setup-uv 10.2.0.
 
 ## [0.8.2] - 2026-09-28
 
@@ -247,7 +334,10 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...v0.9.0
+[0.8.4]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.7.0...v0.8.0

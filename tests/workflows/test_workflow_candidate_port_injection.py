@@ -145,7 +145,8 @@ async def test_public_candidate_port_executes_isolated_edits_and_verification(tm
                 name, args = (
                     ("file_write", {"path": "source.py", "mode": "create", "content": "value = 2\n", "overwrite": True})
                     if self.count == 1 else
-                    ("bash", {"command": f"{shlex.quote(sys.executable)} -m pytest -q test_probe.py"})
+                    ("bash", {"command": f"PYTHONDONTWRITEBYTECODE=1 {shlex.quote(sys.executable)} "
+                             "-m pytest -q -p no:cacheprovider test_probe.py"})
                 )
                 calls = [{"id": f"call_{self.count}", "type": "function", "function": {
                     "name": name, "arguments": json.dumps(args),

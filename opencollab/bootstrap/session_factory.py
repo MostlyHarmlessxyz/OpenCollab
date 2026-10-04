@@ -25,6 +25,7 @@ from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
+from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.ports import (
     AskUserPort,
@@ -35,9 +36,14 @@ from opencollab.application.ports import (
     SchedulerPort,
     SessionStorePort,
     ShaperPort,
+    SnapshotStorePort,
 )
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
+from opencollab.bootstrap.agent_profiles import (
+    SingleAgentProfile,
+    resolve_agent_profile,
+)
 from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
@@ -213,6 +219,7 @@ def build_session(
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
     agent_profile: Any | None = None,
+    context_policy: Any | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -244,6 +251,7 @@ def build_session(
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
         agent_profile=agent_profile,
+        context_policy=context_policy,
     )
     Session.__init__(
         session,
@@ -265,10 +273,33 @@ def load_session(
     agent: Agent,
     **kwargs: Any,
 ) -> Session:
-    """Build a session and restore the snapshot at ``path``."""
+    """Build a session and restore the snapshot at ``path``.
+
+    Without an explicit ``aid`` the session is built under the snapshot's own,
+    so the records written while it is built already name the agent it will be.
+    """
+    if "aid" not in kwargs:
+        snapshot_aid = _snapshot_aid(path, agent, kwargs.get("store"))
+        if snapshot_aid is not None:
+            kwargs["aid"] = snapshot_aid
     session = build_session(agent=agent, **kwargs)
     session.restore(path)
     return session
+
+
+def _snapshot_aid(path: str, agent: Agent, store: SessionStorePort | None) -> int | None:
+    """The aid a snapshot was saved under, or ``None`` if it records none.
+
+    Anything unreadable is left for ``restore`` to report.
+    """
+    resolved = store if store is not None else SessionStore()
+    if not isinstance(resolved, SnapshotStorePort):
+        return None
+    try:
+        snapshot = resolved.load_snapshot(path, agent.system_prompt)
+        return int(snapshot["aid"])
+    except Exception:  # noqa: BLE001 - restore raises the real error
+        return None
 
 
 def snapshot_session(
@@ -447,7 +478,7 @@ class DefaultSessionFactory:
         prebuilt_roster: bool = False,
         allow_unisolated_shell: bool | None = None,
         allow_unisolated_child_shell: bool = False,
-        max_steps: int = SESSION_MAX_STEPS,
+        max_steps: int | None = SESSION_MAX_STEPS,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -468,7 +499,7 @@ class DefaultSessionFactory:
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
-        self._max_steps = int(max_steps)
+        self._max_steps = None if max_steps is None else int(max_steps)
 
     def _validate_responses_tool_support(self) -> None:
         """Reject statically incompatible team roles before opening a workspace."""
@@ -642,7 +673,20 @@ class DefaultSessionFactory:
             seed_user_messages=plan.startup_user_messages(),
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            context_policy=self._team.context,
+            agent_profile=self._role_profile(role),
         )
+
+    def _role_profile(self, role_name: str) -> SingleAgentProfile | None:
+        """The agent profile this seat runs under, or ``None`` for OpenCollab's.
+
+        The prompt half of a profile is folded in by ``ContextBuilder``; this is
+        the other half — the shaper and the safety wrapper, which the session
+        runtime applies. Both halves read the same declaration, so a seat cannot
+        take a profile's words while running OpenCollab's own history handling.
+        """
+        profile = self._team.role_for(role_name).profile
+        return resolve_agent_profile(profile) if profile is not None else None
 
     def create_lead_session(
         self,
@@ -693,6 +737,8 @@ class DefaultSessionFactory:
             aid=aid,
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            context_policy=self._team.context,
+            agent_profile=self._role_profile(self._team.entry),
         )
 
 

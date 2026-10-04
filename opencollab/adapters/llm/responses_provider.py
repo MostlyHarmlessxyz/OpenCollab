@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
+from opencollab.adapters.llm._responses_output import (
+    _merge_terminal_projection,
+    _output_items_agree,
+    _output_text,
+    _reasoning_text,
+)
+from opencollab.adapters.llm._responses_output import (
+    _semantic_output_item as _semantic_output_item,
+)
 from opencollab.adapters.llm.errors import TransientProviderError
+from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.responses_errors import (
     _TRANSIENT_RESPONSE_CODES,
     _TRANSIENT_RESPONSE_MESSAGES,
@@ -50,6 +59,7 @@ from opencollab.adapters.llm.types import (
     ModelCapabilities,
     model_capabilities,
     rescue_empty_turn,
+    responses_sampling_supported,
     to_plain_data,
 )
 
@@ -163,6 +173,7 @@ def _build_request_kwargs(
     reasoning_effort: str | None = None,
     prompt_cache_namespace: str | None = None,
     response_session_id: str | None = None,
+    native_openai: bool = True,
 ) -> dict[str, Any]:
     instructions, input_items = _messages_to_input(messages)
     if not input_items:
@@ -176,7 +187,7 @@ def _build_request_kwargs(
     }
     if capabilities.supports_responses_reasoning:
         kwargs["include"] = ["reasoning.encrypted_content"]
-    if capabilities.supports_responses_sampling:
+    if responses_sampling_supported(model, reasoning_effort, native_openai=native_openai):
         kwargs["temperature"] = temperature
     elif top_p is not None:
         raise ResponsesProtocolError(f"model {model!r} does not support explicit top_p")
@@ -258,11 +269,30 @@ def _event_error_data(event: Any) -> Any:
     return error
 
 
-def _event_error(event: Any) -> str:
-    error = _event_error_data(event)
+def _error_message(error: Any) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or error.get("code") or error.get("reason") or "unknown Responses error")
     return str(error or "unknown Responses error")
+
+
+def _raise_response_error(error: Any) -> None:
+    message = _error_message(error)
+    code = error.get("code") if isinstance(error, dict) else None
+    param = error.get("param") if isinstance(error, dict) else None
+    if code in _TRANSIENT_RESPONSE_CODES or any(
+        fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
+    ):
+        status_code = 429 if code == "rate_limit_exceeded" else 503
+        raise ResponsesTransientEventError(message, code=code, status_code=status_code, param=param)
+    status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
+    raise ResponsesTerminalEventError(message, code=code, status_code=status_code, param=param)
+
+
+def _response_model(response: Any) -> str:
+    actual_model = getattr(response, "model", None)
+    if not isinstance(actual_model, str) or not actual_model:
+        raise ResponsesProtocolError("terminal Responses object is missing model identity")
+    return actual_model
 
 
 def _accept_output_item(event: Any, state: _StreamState) -> None:
@@ -284,10 +314,14 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
         fragments = state.argument_fragments.pop(index, []) if isinstance(index, int) else []
         if fragments and "".join(fragments) != arguments:
             raise ResponsesProtocolError(f"function_call {call_id!r} argument fragments disagree")
-        try:
-            json.loads(arguments)
-        except (TypeError, ValueError) as exc:
-            raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ResponsesProtocolError(f"function_call {call_id!r} is missing name")
+        if item.get("status") != "incomplete":
+            try:
+                _function_call_identity(call_id, name, arguments)
+            except ResponsesProtocolError as exc:
+                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
     state.output_items.append(item)
 
 
@@ -310,39 +344,18 @@ def _validate_terminal_response(
         if reason not in {"max_tokens", "max_output_tokens"}:
             raise ResponsesProtocolError(f"incomplete Responses object has unsupported reason {reason!r}")
         finish_reason = "max_tokens"
-    actual_model = getattr(response, "model", None)
-    if not isinstance(actual_model, str) or not actual_model:
-        raise ResponsesProtocolError("terminal Responses object is missing model identity")
-    return actual_model, finish_reason
+    return _response_model(response), finish_reason
 
 
 
 def _handle_event(event: Any, state: _StreamState, expected_model: str | None = None) -> bool:
     event_type = _event_type(event)
     if event_type in {"error", "response.failed"}:
-        error = _event_error_data(event)
-        message = _event_error(event)
-        code = error.get("code") if isinstance(error, dict) else None
-        if code in _TRANSIENT_RESPONSE_CODES or any(
-            fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
-        ):
-            status_code = 429 if code == "rate_limit_exceeded" else 503
-            raise ResponsesTransientEventError(
-                message,
-                code=code,
-                status_code=status_code,
-            )
-        status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
-        raise ResponsesTerminalEventError(
-            message,
-            code=code,
-            status_code=status_code,
-            param=error.get("param") if isinstance(error, dict) else None,
-        )
+        _raise_response_error(_event_error_data(event))
     if event_type == "response.incomplete":
         response = getattr(event, "response", None)
         if getattr(response, "status", None) != "incomplete":
-            raise ResponsesTerminalEventError(_event_error(event))
+            raise ResponsesTerminalEventError(_error_message(_event_error_data(event)))
         state.completed_response = response
         _validate_terminal_response(response, expected_model)
         return True
@@ -396,6 +409,8 @@ async def _consume_stream(
                 first_event_timeout if first else idle_timeout,
                 stage="first-event" if first else "stream-idle",
             )
+            if first:
+                mark_first_token(RESPONSES_STREAM)
             first = False
             if _handle_event(event, state, expected_model):
                 break
@@ -406,7 +421,18 @@ async def _consume_stream(
             if asyncio.iscoroutine(result):
                 await result
     if state.argument_fragments:
-        raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
+        _, finish_reason = _validate_terminal_response(state.completed_response, expected_model)
+        output = _validated_response_items(to_plain_data(getattr(state.completed_response, "output", None)))
+        covered = finish_reason == "max_tokens" and all(
+            0 <= index < len(output)
+            and output[index].get("type") == "function_call"
+            and output[index].get("status") == "incomplete"
+            and output[index].get("arguments") == "".join(fragments)
+            for index, fragments in state.argument_fragments.items()
+        )
+        if not covered:
+            raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
+        state.argument_fragments.clear()
     return state
 
 
@@ -419,6 +445,7 @@ async def _create_and_consume_stream(
 ) -> _StreamState:
     loop = asyncio.get_running_loop()
     deadline = None if first_event_timeout is None else loop.time() + first_event_timeout
+    begin_attempt(streamed=True)
     try:
         if first_event_timeout is None:
             event_stream = await client.responses.create(**kwargs)
@@ -451,115 +478,6 @@ async def _create_and_consume_stream(
     )
 
 
-def _output_text(item: dict[str, Any]) -> str:
-    if item.get("type") != "message":
-        return ""
-    parts: list[str] = []
-    for content in item.get("content") or ():
-        if not isinstance(content, dict):
-            continue
-        if content.get("type") == "output_text" and isinstance(content.get("text"), str):
-            parts.append(content["text"])
-        elif content.get("type") == "refusal" and isinstance(content.get("refusal"), str):
-            parts.append(content["refusal"])
-    return "".join(parts)
-
-
-def _reasoning_text(item: dict[str, Any]) -> str:
-    if item.get("type") != "reasoning":
-        return ""
-    parts: list[str] = []
-    for summary in item.get("summary") or ():
-        if isinstance(summary, dict) and isinstance(summary.get("text"), str):
-            parts.append(summary["text"])
-    return "\n".join(parts)
-
-
-def _semantic_output_item(item: dict[str, Any]) -> tuple[Any, ...]:
-    """Return the stable meaning shared by streamed and terminal output items."""
-    item_type = item.get("type")
-    if item_type == "function_call":
-        return (
-            item_type,
-            *_function_call_identity(
-                item.get("call_id"),
-                item.get("name"),
-                item.get("arguments"),
-            ),
-        )
-    if item_type == "message":
-        role = item.get("role")
-        if not isinstance(role, str) or not role:
-            raise ResponsesProtocolError("message output item is missing its role")
-        phase = item.get("phase")
-        if phase is not None and phase not in {"commentary", "final_answer"}:
-            raise ResponsesProtocolError(
-                f"message output contains unsupported phase {phase!r}"
-            )
-        parts: list[tuple[str, str]] = []
-        for raw_part in item.get("content") or ():
-            if not isinstance(raw_part, dict):
-                raise ResponsesProtocolError("message output contains an invalid content part")
-            part_type = raw_part.get("type")
-            if part_type == "output_text" and isinstance(raw_part.get("text"), str):
-                parts.append((part_type, raw_part["text"]))
-            elif part_type == "refusal" and isinstance(raw_part.get("refusal"), str):
-                parts.append((part_type, raw_part["refusal"]))
-            else:
-                raise ResponsesProtocolError("message output contains an unsupported content part")
-        return item_type, role, tuple(parts)
-    if item_type == "reasoning":
-        summaries: list[tuple[str | None, str]] = []
-        for raw_summary in item.get("summary") or ():
-            if not isinstance(raw_summary, dict) or not isinstance(raw_summary.get("text"), str):
-                raise ResponsesProtocolError("reasoning output contains an invalid summary part")
-            summaries.append((raw_summary.get("type"), raw_summary["text"]))
-        return item_type, tuple(summaries)
-    raise ResponsesProtocolError("response output contains an unsupported item")
-
-
-def _output_items_agree(streamed: dict[str, Any], terminal: dict[str, Any]) -> bool:
-    if _semantic_output_item(streamed) != _semantic_output_item(terminal):
-        return False
-    if streamed.get("type") == "message":
-        streamed_phase = streamed.get("phase")
-        terminal_phase = terminal.get("phase")
-        if (
-            streamed_phase is not None
-            and terminal_phase is not None
-            and streamed_phase != terminal_phase
-        ):
-            return False
-        return True
-    if streamed.get("type") != "reasoning":
-        return True
-    streamed_encrypted = streamed.get("encrypted_content")
-    terminal_encrypted = terminal.get("encrypted_content")
-    for value in (streamed_encrypted, terminal_encrypted):
-        if value is not None and not isinstance(value, str):
-            raise ResponsesProtocolError("reasoning output contains invalid encrypted content")
-    return streamed_encrypted is None or terminal_encrypted is None or streamed_encrypted == terminal_encrypted
-
-
-def _merge_terminal_projection(
-    streamed: dict[str, Any],
-    terminal: dict[str, Any],
-) -> dict[str, Any]:
-    if (
-        streamed.get("type") == "reasoning"
-        and streamed.get("encrypted_content") is None
-        and terminal.get("encrypted_content") is not None
-    ):
-        streamed = {**streamed, "encrypted_content": terminal["encrypted_content"]}
-    if (
-        streamed.get("type") == "message"
-        and streamed.get("phase") is None
-        and terminal.get("phase") is not None
-    ):
-        streamed = {**streamed, "phase": terminal["phase"]}
-    return streamed
-
-
 def _parse_stream(
     state: _StreamState,
     messages: list[dict[str, Any]],
@@ -576,6 +494,21 @@ def _parse_stream(
         raise ResponsesProtocolError(f"JSON Schema tool response incomplete: {incomplete!r}")
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
+    interrupted_calls = any(
+        item.get("type") == "function_call" and item.get("status") == "incomplete"
+        for item in final_items
+    )
+    if interrupted_calls:
+        if finish_reason != "max_tokens":
+            raise ResponsesProtocolError("completed Responses output contains incomplete tool calls")
+        final_items = [
+            item for item in final_items
+            if item.get("type") != "function_call" or item.get("status") != "incomplete"
+        ]
+        state.output_items = [
+            item for item in state.output_items
+            if item.get("type") != "function_call" or item.get("status") != "incomplete"
+        ]
     output_mismatch = len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
@@ -629,7 +562,7 @@ def _parse_stream(
         state.output_items.append(synthetic_item)
         content = None
     content = rescue_empty_turn(content, tool_calls, reasoning)
-    if not content and not tool_calls:
+    if not content and not tool_calls and finish_reason != "max_tokens":
         raise ResponsesEmptyOutputError("response.completed contained no message or function call")
     return LLMResponse(
         content=content,
@@ -656,7 +589,10 @@ def parse_responses_response(
     forced_text_tool: ForcedTextTool | None = None,
     tools: list[dict[str, Any]] | None = None,
 ) -> LLMResponse:
-    """Parse one completed non-streaming Responses object."""
+    """Parse one terminal non-streaming Responses object."""
+    if getattr(response, "status", None) == "failed":
+        _response_model(response)
+        _raise_response_error(to_plain_data(getattr(response, "error", None)))
     _validate_terminal_response(response, expected_model)
     state = _StreamState(completed_response=response)
     output = to_plain_data(getattr(response, "output", None))
@@ -688,6 +624,7 @@ async def complete_responses(
     reasoning_effort: str | None = None,
     prompt_cache_namespace: str | None = None,
     response_session_id: str | None = None,
+    native_openai: bool = True,
     first_event_timeout: float | None = 180.0,
     stream_idle_timeout: float | None = 180.0,
     round_timeout: float | None = None,
@@ -711,6 +648,7 @@ async def complete_responses(
         reasoning_effort=reasoning_effort,
         prompt_cache_namespace=prompt_cache_namespace,
         response_session_id=response_session_id,
+        native_openai=native_openai,
     )
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming
@@ -718,6 +656,7 @@ async def complete_responses(
     async def request_once() -> LLMResponse:
         if not stream:
             kwargs["stream"] = False
+            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
             response = await client.responses.create(**kwargs)
             _check_instructions_echo(response, kwargs)
             return parse_responses_response(

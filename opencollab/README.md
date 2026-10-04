@@ -127,7 +127,10 @@ omitting it inherits `concurrency`. The two limits are independent, so mixed
 agent and task work may peak at their sum.
 Completed, stopped, and failed workflow results report aggregate session,
 step, token, and markup-recovery metrics. Sanitized child-provider failures are
-available through `RunResult.agent_failures`.
+available through `RunResult.agent_failures`. Nested failures and operating-system
+errors also include a bounded `exception_chain` with exception types, modules,
+integer `errno` values, and HTTP status codes when available. Messages, request
+bodies, and filesystem paths are excluded from this structured evidence.
 
 Use `builtin_tools` to compose tools through the public package.
 
@@ -272,6 +275,8 @@ context overflow.
 A team stores active agents in a session table and schedules them cooperatively.
 The `spawn` operation creates child sessions. Budget is reserved before the
 first `await`, so a concurrent child batch cannot overspend the shared pool.
+A team file may instead give each role its own allowance; each agent is then
+held to that allowance alone, and the team's total is their sum.
 Each child can work in an isolated git worktree and return its diff with the
 result.
 

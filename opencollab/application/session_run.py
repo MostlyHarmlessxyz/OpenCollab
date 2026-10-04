@@ -26,6 +26,7 @@ from opencollab.application._session_run_shared import (
     PendingStep,
     _ContextOverflowStop,
     _submit_tool_choice,
+    _TeamBudgetStop,
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_usage import _normalize_completion_usage
@@ -152,14 +153,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # Guards the once-per-session retry on an empty-stop turn (see
         # ``handle_pending_response``).
         self._empty_stop_retried = False
-        # The summary a ``submit`` call in the step now finishing gave, or None
-        # when this step did not submit. Read once by
-        # ``autosave_pending_step``, which ends the turn at DONE.
-        self._submitted_summary: str | None = None
         # High-water mark of the steering nudge level emitted so far
         # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
         # crossings, re-arming on a write reset. Never persisted.
         self._last_steering_level: str | None = None
+        # Previous steering spend drives threshold crossings. ``None`` makes
+        # the first build compare spend against itself, including after restore.
+        self._steering_prev_used_tokens: int | None = None
         # One ``session_terminal`` row per session, not per turn: ``run_loop``
         # can be re-entered on an already-finished session as a read-only query
         # for its answer, and that must not add a second disposition.
@@ -179,6 +179,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._low_yield_m = low_yield_m
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        # What the application offered before provider request adaptation. Written by
+        # ``_complete_with_choice`` (the one place a request is issued) and read
+        # by ``record_llm_trace``; recording only, never consulted by control
+        # flow.
+        self._last_request_tool_names: list[str] = []
+        self._last_request_tool_choice: Any = None
         self._required_tool_retried = False
         # Message index where the current user turn began. It survives a
         # deferred suspend/resume so the returned answer is scoped to this turn.
@@ -203,8 +209,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.reset_runtime_for_user_turn()
         self._pending = None
         self._empty_stop_retried = False
-        self._submitted_summary = None
+        self.state.submitted_summary = None
         self._last_steering_level = None
+        self._steering_prev_used_tokens = None
         self._turn_start_message_index = None
         self._llm_step_started = False
         self._late_provider_usage = ()
@@ -296,6 +303,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def _prepare_turn(self) -> None:
         """Set the answer cursor and resume the phase appropriate to this call."""
         entry_phase = self.state.phase
+        if not self.state.pending_events.is_empty() and (
+            entry_phase is SessionPhase.IDLE or entry_phase.is_terminal()
+        ):
+            self.state.resume_to_idle()
+            self.state.set_phase(SessionPhase.AWAITING_EVENTS)
+            entry_phase = SessionPhase.AWAITING_EVENTS
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
         if entry_phase is SessionPhase.AWAITING_EVENTS:
@@ -315,7 +328,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             # Deferred work belongs to the same turn; every other entry starts a
             # fresh once-per-turn empty-response retry allowance.
             self._empty_stop_retried = False
-            self._submitted_summary = None
+            self.state.submitted_summary = None
 
     def _last_turn_answer(self) -> str:
         """Return the last real assistant text produced by the current turn."""
@@ -402,6 +415,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         for message in table.ordered_results():
             self.state.append_message(message)
         table.clear()
+        queued_turn = self.state.pending_external_user_turn
+        if queued_turn is not None:
+            self.state.consume_queued_external_user_turn()
+            self._turn_start_message_index = len(self.state.messages)
+            self.state.start_active_turn(self._turn_start_message_index)
+            self._empty_stop_retried = False
+            self.state.submitted_summary = None
         self.state.transition_to(SessionPhase.AUTOSAVING)
 
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
@@ -575,8 +595,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if self.max_budget_tokens is not None:
             explore_threshold = self.max_budget_tokens - self._commit_reserve
             budget_spent = self.state.used_tokens >= explore_threshold
-        watchdog_tripped = self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
-        low_yield_tripped = self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
+        progress_known = not self.state.turn.last_progress_unknown
+        watchdog_tripped = (
+            progress_known and self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
+        )
+        low_yield_tripped = (
+            progress_known and self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
+        )
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -627,8 +652,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck("execution environment has been revoked")
             return
 
-        if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
-            reason = f"loop block limit reached: {self.state.turn.loop_blocked_since_progress} repeated tool calls"
+        if self.state.turn.loop_state.blocked_rounds >= DEFAULT_LOOP_BLOCKED_LIMIT:
+            reason = f"loop block limit reached: {self.state.turn.loop_state.blocked_rounds} unproductive tool batches"
             await self._stop_precheck(reason)
             return
 
@@ -694,6 +719,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             return
         except _ContextOverflowStop:
             await self._stop_on_context_overflow()
+            return
+        except _TeamBudgetStop:
+            await self._stop_precheck("team budget exceeded: aggregate spend reached the global cap")
             return
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)
@@ -788,15 +816,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             )
             return
 
-        # Empty-stop: a clean ``stop`` turn that produced neither text nor a tool
+        # Empty-stop: a natural completion that produced neither text nor a tool
         # call. Falling straight through to DONE would silently record a clean
         # completion that answered nothing. Retry once with a nudge before giving
         # up; the once-per-turn flag (plus the budget/step limits) bounds it. The
         # AUTOSAVING handler finishes the step and loops back to PRECHECK.
-        # ``finish_reason`` is gated to "stop": a "length" truncation will only
-        # truncate again, so a nudge cannot help there.
+        # Chat ``stop`` and native ``end_turn`` share this recovery. Other stop
+        # reasons retain their existing handling.
         empty_stop = not has_content and not response.tool_calls
-        if empty_stop and response.finish_reason in (None, "stop") and not self._empty_stop_retried:
+        if empty_stop and response.finish_reason in (None, "stop", "end_turn") and not self._empty_stop_retried:
             self._empty_stop_retried = True
             # Record the retry to the trajectory so empty-stops are measurable
             # (the injected nudge/placeholder messages are never persisted).

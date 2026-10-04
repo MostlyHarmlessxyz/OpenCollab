@@ -2,34 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from opencollab.application._session_run_shared import (
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
     GenerationTimeoutError,
     _ContextOverflowStop,
+    _request_tool_names,
     _submit_tool_choice,
+    _TeamBudgetStop,
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
+from opencollab.application._session_run_usage import _normalize_completion_usage
+from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
-from opencollab.application.ports import CompletionResponse
-from opencollab.application.shaping import forced_shape
+from opencollab.application.ports import CompletionResponse, RequestTokenEstimatorPort
+from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
+    resolve_budget_nudge_mode,
+    resolve_write_nudge_mode,
 )
 from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.token_estimation import estimate_request_tokens
-from opencollab.domain.tools import ToolProcessingResult
+from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_key
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +133,20 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     error=error,
                 )
 
+    def _is_deferred_tool_name(self, name: object) -> bool:
+        try:
+            key = tool_name_collision_key(name)
+        except ValueError:
+            return False
+        return any(tool_name_collision_key(allowed) == key for allowed in self.deferrable_tool_names)
+
     def _split_tool_calls(self, tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
         """Partition a batch into (immediate, deferred) by deferrable name."""
         immediate: list[dict] = []
         deferred: list[dict] = []
         for tc in tool_calls:
             name = tc.get("function", {}).get("name")
-            if name in self.deferrable_tool_names:
+            if self._is_deferred_tool_name(name):
                 deferred.append(tc)
             else:
                 immediate.append(tc)
@@ -141,7 +155,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     def _record_submission(self, result: Any) -> None:
         """Remember that this step called ``submit``, and with what."""
         if getattr(result, "turn_submitted", False):
-            self._submitted_summary = getattr(result, "submitted_summary", None) or ""
+            self.state.submitted_summary = getattr(result, "submitted_summary", None) or ""
 
     async def autosave_pending_step(self) -> None:
         """Emit step_end (the autosave trigger), then PRECHECK -- or DONE.
@@ -159,14 +173,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if pending is not None
             else (self.state.pending_step_latency or 0.0)
         )
-        submitted = self._submitted_summary
+        submitted = self.state.submitted_summary
         if submitted is not None:
             self.state.append_message({"role": "assistant", "content": submitted})
         await self.finish_step(latency)
         self.clear_pending_step()
         self._ensure_tool_environment_active()
         if submitted is not None:
-            self._submitted_summary = None
+            self.state.submitted_summary = None
             self.state.transition_to(SessionPhase.DONE, reason="submitted")
             return
         self.state.transition_to(SessionPhase.PRECHECK)
@@ -302,39 +316,46 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
-        completed_messages = list(blocked_messages)
-        observations = ToolProcessingResult()
+        self._buffer_completed_rows(table, order, blocked_messages)
+        observations = ToolProcessingResult(
+            model_step=self.state.step_count if self.state.step_count > 0 else None,
+        )
         terminal_capture_accepted = False
         for tc in tool_calls:
             if terminal_capture_accepted:
-                completed_messages.append(
+                self._buffer_completed_rows(table, order, [
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
                     }
-                )
+                ])
                 continue
-            if tc.get("function", {}).get("name") in self.deferrable_tool_names:
+            if self._is_deferred_tool_name(tc.get("function", {}).get("name")):
                 await self._execute_deferred_tools(table, order, [tc])
                 continue
 
             proc = await self.tool_execution.process([tc])
             proc.apply_hashes_to(self.state)
+            proc.apply_read_write_counter_to(self.state)
+            self._buffer_completed_rows(table, order, proc.messages_to_append)
             observations.reads_executed += proc.reads_executed
             observations.write_succeeded |= proc.write_succeeded
             observations.read_write_signals.extend(proc.read_write_signals)
+            observations.current_progress |= proc.current_progress
+            observations.effect_unknown |= proc.effect_unknown
+            observations.evidence_neutral.extend(proc.evidence_neutral)
             observations.evidence_signals.extend(proc.evidence_signals)
             observations.evidence_cards.extend(proc.evidence_cards)
             observations.loop_detections.extend(proc.loop_detections)
             observations.tool_step_attempted |= proc.tool_step_attempted
-            completed_messages.extend(proc.messages_to_append)
+            _apply_completed_prefix_progress(self.state, observations)
             terminal_capture_accepted = proc.terminal_capture_accepted
             self._record_submission(proc)
 
-        observations.apply_read_write_counter_to(self.state)
+        # Immediate results have folded their ordered read/write prefix already.
+        observations.read_write_applied_count = len(observations.read_write_signals)
         observations.apply_evidence_counter_to(self.state)
-        self._buffer_completed_rows(table, order, completed_messages)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
@@ -360,6 +381,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     ) -> None:
         for message in messages:
             tool_call_id = message["tool_call_id"]
+            previous = table.rows.get(tool_call_id)
+            if previous is not None and previous.status is RowStatus.DONE and previous.result == message["content"]:
+                continue
             table.add(
                 PendingRow(
                     tool_call_id=tool_call_id,
@@ -398,17 +422,26 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             max_budget_tokens=self.max_budget_tokens,
             step_count=self.state.step_count + 1,
             max_steps=self.max_steps,
-            reads=self.state.turn.reads_since_last_edit,
+            reads=0 if self.state.turn.write_effect_unknown else self.state.turn.reads_since_last_edit,
             has_write=bool(tool_names & _WRITE_TOOLS),
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
             write_landed=self.state.turn.has_landed_write,
+            budget_nudge_mode=resolve_budget_nudge_mode(),
+            write_nudge_mode=resolve_write_nudge_mode(),
+            prev_used_tokens=(
+                self.state.used_tokens
+                if self._steering_prev_used_tokens is None
+                else self._steering_prev_used_tokens
+            ),
         )
+        # Spend at the turn just built, so the next turn can see a band crossing.
+        self._steering_prev_used_tokens = self.state.used_tokens
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = self._shape_and_trace(self.state.messages)
+        messages = await self._shape_and_trace(self.state.messages)
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
@@ -427,7 +460,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        forced = forced_shape(self.shaper, self.state.messages) if self.shaper is not None else self.state.messages
+        forced = (
+            await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
+            if self.shaper is not None else self.state.messages
+        )
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -497,6 +533,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
     ) -> CompletionResponse:
+        # Record-only capture of what this request offers, read back by
+        # ``record_llm_trace`` after the response returns. This is the single
+        # place a request is issued, so it sees the list AFTER the steering hard
+        # rung narrows it and the choice AFTER an override or a degrade to
+        # "auto". Provider-specific conversions happen after this observation;
+        # the trace identifies its application stage.
+        self._last_request_tool_names = _request_tool_names(tools)
+        self._last_request_tool_choice = tool_choice
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
         # exactly as before — the thinking kwargs are omitted entirely so the LLM
@@ -516,24 +560,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        configured_output_tokens = getattr(
-            self.agent,
-            "max_tokens_per_step",
-            DEFAULT_MAX_TOKENS_PER_STEP,
+        max_output_tokens = self._request_output_limit(
+            messages, tools, thinking=getattr(self.agent, "thinking", False)
         )
-        max_output_tokens = max(1, int(configured_output_tokens))
-        if self.max_budget_tokens is not None:
-            remaining_budget = int(self.max_budget_tokens) - int(
-                self.state.used_tokens
-            )
-            reserved_input_tokens = estimate_request_tokens(messages, tools)
-            output_budget = remaining_budget - reserved_input_tokens
-            if output_budget < 1:
-                raise _TokenBudgetStop(
-                    reserved_input_tokens=reserved_input_tokens,
-                    remaining_budget=remaining_budget,
-                )
-            max_output_tokens = min(max_output_tokens, output_budget)
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
@@ -556,6 +585,99 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             thinking_params=getattr(self.agent, "thinking_params", None),
             **extra,
         )
+
+    def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
+        # Summary calls await provider work after PRECHECK. Their usage, or a
+        # sibling's concurrent usage, can exhaust the shared allowance meanwhile.
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            raise _TeamBudgetStop
+        configured_output_tokens = getattr(
+            self.agent,
+            "max_tokens_per_step",
+            DEFAULT_MAX_TOKENS_PER_STEP,
+        )
+        max_output_tokens = max(1, int(configured_output_tokens))
+        if self.max_budget_tokens is not None:
+            remaining_budget = int(self.max_budget_tokens) - int(
+                self.state.used_tokens
+            )
+            # The provider owns history adaptation, including thinking replay.
+            # Injected clients without that optional capability use the common
+            # estimate with all continuation fields included.
+            if isinstance(self.llm, RequestTokenEstimatorPort):
+                reserved_input_tokens = self.llm.estimate_request_tokens(
+                    messages,
+                    tools,
+                    thinking=thinking,
+                    thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+                )
+            else:
+                reserved_input_tokens = estimate_request_tokens(messages, tools)
+            output_budget = remaining_budget - reserved_input_tokens
+            if output_budget < 1:
+                raise _TokenBudgetStop(
+                    reserved_input_tokens=reserved_input_tokens,
+                    remaining_budget=remaining_budget,
+                )
+            max_output_tokens = min(max_output_tokens, output_budget)
+        return max_output_tokens
+
+    async def _invoke_summary(
+        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
+    ) -> CompletionResponse:
+        """Reserve, own and charge a summary call exactly once."""
+        max_output_tokens = self._request_output_limit(messages, None, thinking=False)
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
+            kwargs["max_output_tokens"] = max_output_tokens
+        start = time.monotonic()
+        protected_call = self.state.wind_down_done
+        abandoned = False
+        if self.tracer:
+            self.tracer.log_step(step_type="llm_call_started", payload={
+                "aid": self.state.aid, "purpose": "summary", "session_step": self.state.step_count,
+                "role": getattr(self.agent, "role", None) or getattr(self.agent, "label", None) or self.agent.model,
+                "response_session_id": self._response_session_id,
+            })
+
+        def account_response(response: CompletionResponse) -> None:
+            input_tokens, total_tokens = _normalize_completion_usage(response.usage)
+            self.state.add_used_tokens(total_tokens)
+            self._mark_budget_reserve_consumed(protected_call=protected_call)
+            self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
+            self.state.set_context_tokens(input_tokens)
+            if abandoned:
+                self._late_provider_usage += (total_tokens,)
+            self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
+
+        async def complete_owned() -> CompletionResponse:
+            try:
+                return await complete(messages, on_response=account_response, **kwargs)
+            finally:
+                self._draining_provider_tasks.discard(asyncio.current_task())
+
+        owner = asyncio.create_task(complete_owned())
+        self._track_provider_task(owner)
+        try:
+            if self._per_call_timeout is None:
+                await asyncio.wait({owner})
+                return owner.result()
+            return await abandon_on_timeout(
+                owner, self._per_call_timeout,
+                late_task_tracker=self._mark_provider_task_draining,
+                late_result_handler=self._provider_task_done,
+            )
+        except CallerTimeoutError as exc:
+            abandoned = True
+            raise GenerationTimeoutError(
+                f"LLM summary generation exceeded the {self._per_call_timeout}s per-call timeout"
+            ) from exc
+        except asyncio.CancelledError:
+            abandoned = True
+            if not owner.done():
+                if self._per_call_timeout is None:
+                    owner.cancel()
+                self._mark_provider_task_draining(owner)
+            raise
 
     async def _invoke_llm(self, **kwargs: Any) -> CompletionResponse:
         """Call the provider, bounding a single generation by ``_per_call_timeout``.
@@ -639,7 +761,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         # to the provider, and the run loop must not execute partial arguments.
         # Preserve only user-visible partial text; the full raw response remains
         # available in the trace for diagnosis.
-        if response.finish_reason in {"length", "max_tokens"}:
+        if response.finish_reason in {"length", "max_tokens", "model_context_window_exceeded"}:
             if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return

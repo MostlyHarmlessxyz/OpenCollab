@@ -52,11 +52,25 @@ agree or they do not.
 
 ## Running it
 
+From the root of your OpenCollab source checkout, set the example's discovery
+directory and run it against the target workspace. The absolute directory
+keeps discovery tied to this example when the target repository is elsewhere.
+
 ```bash
+export OPENCOLLAB_WORKFLOWS_DIR="$(pwd)/examples/dw-handoff/workflows"
 opencollab workflow run dw-handoff \
   --workspace /path/to/a/git/repo \
-  --args '{"goal": "the task the agents are given"}'
+  --args '{"goal": "the task the agents are given", "allow_unisolated_shell": true}'
 ```
+
+`allow_unisolated_shell` grants all three roles permission to run commands on
+the host. Set it to JSON `true` for this local invocation so the coder can
+commit and the tester can check out the offered commit. The default is `false`,
+which requires an OS process sandbox for Bash. Each agent still receives its
+own Git worktree when host shell execution is enabled. A worktree isolates
+files and shares Git objects while commands run with the host's privileges.
+With an injected environment that provides an OS process sandbox, keep the
+default and pass only the task's `goal`.
 
 The workspace must be a git repository with at least one commit: worktrees need
 something to branch from. Each agent's tree is created detached at the

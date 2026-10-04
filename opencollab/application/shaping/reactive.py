@@ -204,6 +204,23 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
                 replacement = {
                     key: value for key, value in leader.items() if key != "tool_calls"
                 }
+                replay = leader.get("response_items")
+                if isinstance(replay, list):
+                    replacement["response_items"] = [
+                        item for item in replay
+                        if not isinstance(item, dict) or item.get("type") != "function_call"
+                    ]
+                provider_state = leader.get("provider_state")
+                if isinstance(provider_state, dict):
+                    blocks = provider_state.get("anthropic_content")
+                    if isinstance(blocks, list):
+                        replacement["provider_state"] = {
+                            **provider_state,
+                            "anthropic_content": [
+                                block for block in blocks
+                                if not isinstance(block, dict) or block.get("type") != "tool_use"
+                            ],
+                        }
                 replacements[start] = replacement
                 drop.update(range(start + 1, end))
             else:
@@ -291,9 +308,40 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
                 self._summary_cache.popitem(last=False)
         return summary
 
+    async def _asummarize(self, segment: list[dict[str, Any]]) -> str:
+        asummarize = getattr(self.summarizer, "asummarize", None)
+        if not callable(asummarize):
+            return self._summarize(segment)
+        key = self._summary_cache_key(segment) if self._summary_cache_size else None
+        if key is not None and key in self._summary_cache:
+            self._summary_cache.move_to_end(key)
+            return self._summary_cache[key]
+        summary = await asummarize(segment)
+        if key is not None and summary and getattr(self.summarizer, "last_call_cacheable", True):
+            self._summary_cache[key] = summary
+            self._summary_cache.move_to_end(key)
+            while len(self._summary_cache) > self._summary_cache_size:
+                self._summary_cache.popitem(last=False)
+        return summary
+
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if self.summarizer is None or not self._over_trigger(messages):
+        region = self._compact_region(messages)
+        if region is None:
             return messages
+        start, end = region
+        return self._replace_region(messages, start, end, self._summarize(messages[start:end]))
+
+    async def ashape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        region = self._compact_region(messages)
+        if region is None:
+            return messages
+        start, end = region
+        summary = await self._asummarize(messages[start:end])
+        return self._replace_region(messages, start, end, summary)
+
+    def _compact_region(self, messages: list[dict[str, Any]]) -> tuple[int, int] | None:
+        if self.summarizer is None or not self._over_trigger(messages):
+            return None
         spans, lo, hi = _droppable_region(messages, self.keep_recent_groups)
         # Never fold a pinned source (identity/team/task) into the summary.
         lo, hi = pinned_free_region(messages, spans, lo, hi)
@@ -304,16 +352,19 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
             safe_end += 1
         hi = safe_end
         if lo >= hi:
-            return messages
+            return None
         start, end = spans[lo][0], spans[hi - 1][1]
+        return (start, end) if start < end else None
+
+    def _replace_region(
+        self, messages: list[dict[str, Any]], start: int, end: int, summary: str
+    ) -> list[dict[str, Any]]:
         segment = messages[start:end]
-        if not segment:
-            return messages
         marker = {
             "role": "system",
             "content": (
                 f"{COMPACTED_MARKER_PREFIX} — summary of {len(segment)} earlier "
-                f"messages]:\n{self._summarize(segment)}"
+                f"messages]:\n{summary}"
             ),
             "compacted": True,
         }

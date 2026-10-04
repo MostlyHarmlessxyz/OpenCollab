@@ -16,6 +16,7 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
+from opencollab.builtin_workflows import _file_selection
 
 
 def _git(path, *args):
@@ -131,11 +132,14 @@ def _script_sessions(monkeypatch, source, command):
 
 @pytest.mark.parametrize("profile", [None, "single2"])
 @pytest.mark.parametrize("flow_name,both_pass", [("duo", False), ("duo", True)])
+@pytest.mark.parametrize("file_evidence", [False, True])
 async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
-    tmp_path, monkeypatch, profile, flow_name, both_pass,
+    tmp_path, monkeypatch, profile, flow_name, both_pass, file_evidence,
 ):
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
+    if file_evidence:
+        monkeypatch.setattr(_file_selection, "_INLINE_EVIDENCE_MAX_BYTES", 0)
     repo = _repository(tmp_path / "repo", both_pass=both_pass)
     command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
     sessions = _script_sessions(monkeypatch, repo / "source.py", command)
@@ -148,6 +152,7 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
 
     assert result.ok, result.error
     assert result.output["status"] == "done", (result.output, result.agent_failures)
+    assert result.output["prompt_revision"] == 8
     assert result.output["winner"] == result.output["adopted"] == "B"
     assert result.output["shared_public_command"] == command
     assert result.output["judge_used"] is both_pass
@@ -171,18 +176,36 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     assert all(workspace != repo and not workspace.exists() for workspace in coder_workspaces)
     assert "return 1" in _last_tool_result(sessions[1][2].calls[1])
     assert command in str(sessions[1][2].calls[0])
-    for session, kwargs, _ in sessions:
+    for session, kwargs, scripted in sessions:
+        assert "final deliverable" in str(scripted.calls[0])
+        assert "affected focused checks" in str(scripted.calls[0])
         actual_profile = kwargs["agent_profile"]
         assert (None if actual_profile is None else actual_profile.name) == profile
         if profile == "single2":
             assert session.agent.system_prompt.startswith(SINGLE2_SYSTEM_PROMPT)
             assert "They take precedence over the general software-repair duties" in session.agent.system_prompt
+            assert "following the runtime's permissions and delivery requirements" in scripted.calls[0][0]["content"]
+            assert "Do not alter protected validation" in scripted.calls[0][0]["content"]
     if both_pass:
         judge, _, scripted = sessions[2]
         names = [tool.name for tool in judge.agent.tools]
-        assert set(names) == {"read_candidate_evidence", "structured_output"}
-        assert "return 2" in _last_tool_result(scripted.calls[1])
-        assert "return 3" in _last_tool_result(scripted.calls[2])
+        if file_evidence:
+            assert set(names) == {"read_candidate_evidence", "structured_output"}
+            assert len(scripted.calls) == 3
+            assert "return 2" in _last_tool_result(scripted.calls[1])
+            assert "return 3" in _last_tool_result(scripted.calls[2])
+        else:
+            assert names == ["structured_output"]
+            assert len(scripted.calls) == 1
+            prompt = next(message["content"] for message in scripted.calls[0]
+                          if "\nCandidate evidence\n" in message.get("content", ""))
+            payload, _ = json.JSONDecoder().raw_decode(prompt.split("\nCandidate evidence\n", 1)[1])
+            for role, value in [("A", "2"), ("B", "3")]:
+                inline = payload["inline_comparison"][role]
+                assert f"return {value}" in inline["diff"]
+                assert inline["candidate_report"] == f"Candidate {role} finished"
+                assert inline["public_test_records"] == result.output["candidates"][role]["public_test_records"]
+                assert inline["report_is_model_supplied"] is True
         directories = list(evidence.glob("duo-evidence-*"))
         assert len(directories) == 1
         assert "return 3" in (directories[0] / "B/candidate.diff").read_text()
@@ -213,11 +236,12 @@ async def test_runtime_resolves_cli_profile_name_in_composition_root(tmp_path, m
     assert [profile.name for profile in observed] == ["single2"]
 
 
+@pytest.mark.parametrize("profile", [None, "single2"])
 @pytest.mark.parametrize(("filename", "desired"), [
     ("app.conf", "enabled=true\n"),
     ("report.csv", "item,count\nready,3\n"),
 ])
-async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monkeypatch, filename, desired):
+async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monkeypatch, profile, filename, desired):
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     repo = tmp_path / "artifacts"
     repo.mkdir()
@@ -249,6 +273,10 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
             self.step += 1
             if self.step == 1:
                 assert "configuration, dependencies" in str(messages)
+                if profile == "single2":
+                    system = messages[0]["content"]
+                    assert system.startswith(SINGLE2_SYSTEM_PROMPT)
+                    assert "Modify source, configuration, or other delivery files" in system
                 return _tool_response("file_write", {
                     "path": filename, "mode": "create",
                     "content": "partial\n" if self.role == "A" else desired,
@@ -265,7 +293,7 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
     monkeypatch.setattr(workflow_session, "build_session", build)
     result = await OpenCollab(repo, provider="openai", model="scripted-model").workflow(
         "duo", {"goal": f"Produce {filename} with the requested content", "allow_unisolated_shell": True},
-        budget=10_000, max_steps=5, trace=False,
+        agent_profile=profile, budget=10_000, max_steps=5, trace=False,
     )
     assert result.ok and result.output["status"] == "done"
     assert result.output["selection_reason"] == "same-command-public-red"

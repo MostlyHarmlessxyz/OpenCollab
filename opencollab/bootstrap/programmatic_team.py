@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -41,9 +42,11 @@ async def run_team(
     use_worktrees: bool,
     prebuild_team: bool = False,
     allow_unisolated_shell: bool | None = None,
-    max_steps: int = SESSION_MAX_STEPS,
+    max_steps: int | None = SESSION_MAX_STEPS,
     serialize_turns: bool = False,
     environment: Environment | None = None,
+    record_delivery_tree: bool = False,
+    budget_explicit: bool = False,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -61,14 +64,24 @@ async def run_team(
     session store are read from it -- while the environment is what agents
     execute in, which is how a team reaches a repository inside a container.
     """
-    run_config = dict(config)
-    run_config["budget"] = max_tokens
-    context = build_runtime_context(workspace, run_config, trace=False)
     team_config = load_team_config(workspace, path=team_config_path)
+    if team_config.role_budgets and budget_explicit:
+        raise ValueError(
+            "the team file declares per-role token budgets; drop budget= from "
+            "this call, or remove the budgets from the file"
+        )
+    run_config = dict(config)
+    run_config["budget"] = (
+        sum(team_config.role_budgets.values()) if team_config.role_budgets else max_tokens
+    )
+    context = build_runtime_context(workspace, run_config, trace=False)
     _programmatic._claim_artifacts(artifacts)
+    # One id per run, written to the trajectory, the team.json manifest and the
+    # result, so the three join on it and two runs never share one.
+    run_id = f"team-{uuid.uuid4().hex}"
     if artifacts is not None and trace:
         context.tracer = Tracer(
-            run_id="team",
+            run_id=run_id,
             output_dir=str(artifacts),
             filename="trajectory.jsonl",
         )
@@ -89,6 +102,8 @@ async def run_team(
             max_steps=max_steps,
             serialize_turns=serialize_turns,
             environment=environment,
+            record_delivery_tree=record_delivery_tree,
+            run_id=run_id,
         )
     except BaseException as exc:
         tracer_failure = _programmatic._close_tracer(context.tracer)
@@ -216,8 +231,11 @@ async def run_team(
         artifacts=artifacts,
         error=failure or wind_down_failure,
         metrics={
+            "run_id": run_id,
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
+            **({"tree_snapshots": [dict(row) for row in scheduler.delivery_tree_snapshots]}
+               if record_delivery_tree else {}),
             # Cleanup also persists the terminal snapshot and releases owned
             # worktrees. Any wind-down failure leaves settlement unverified.
             **_programmatic._quiescence_metrics(

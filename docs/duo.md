@@ -2,7 +2,7 @@
 
 [Chinese guide](duo/README.zh-CN.md)
 
-Duo produces two isolated solutions to a task, compares their evidence, and
+Duo V8 produces two isolated solutions to a task, compares their evidence, and
 adopts one result. Its task-oriented role prompts cover source changes,
 configuration, data and other required artifacts. The runtime supplies the
 candidate environments and delivery mechanism.
@@ -69,33 +69,73 @@ updates when those changes belong to the task. They protect independent
 validation and withheld reference answers. Commits and other submission
 mechanisms follow the task or runtime's requirements.
 
+V8 focuses verification on the final deliverable through the task's intended
+entry points or outputs, including existing behavior directly affected by the
+changes. Coders rerun affected focused checks after the last relevant edit or
+cleanup and distinguish unchanged project checks from candidate-added or modified
+checks. These shared instructions cover both submission modes and apply to code,
+files, and service state. The task and runtime continue to define delivery.
+
 Candidate A pursues the simplest complete solution. Candidate B checks the
 outcome end to end, including dependencies, interactions and boundary cases.
 B receives the public verification command observed from A and is asked to run
 it when relevant and available. Each role reports its actual work, executed
 checks and remaining limitations.
 
-The adjudicator compares the explicit task requirements with the results and
-verification evidence. Model-written reports are identified as claims. Test
-records are comparable when their target, runner and command agree. Unclear or
-unsupported coverage remains unclear. A covered requirement has an evidence
-advantage over either `not_covered` or `unclear` when its evidence cites the
-recommended candidate's changed paths. This comparison applies symmetrically
-to A and B. An explicit `not_covered` requirement that the other candidate covers
-still rejects the recommendation. An advantage over `unclear` without changed-path
-evidence contributes no support, while other supported advantages remain valid.
-Claims of an advantage over `not_covered` still require changed-path evidence.
-Incomplete inventories and recommendations with no supported advantage retain
-the default-A fallback.
+The adjudicator first inspects each candidate separately for concrete failure
+paths against the public task requirements. It traces a relevant input or state
+and trigger through the implementation to the expected output. Coverage depends
+on the behavior from the entry point or producer through its consumers to the
+result. A function's presence or a matching symbol alone leaves that path
+unresolved. Each requirement's `a_evidence` and `b_evidence` entries name the
+original changed paths and explain the inspected behavior. Model-written reports
+are claims to assess. Test records are comparable when their target, runner and
+command agree and their execution remains applicable to the final candidate.
+
+Native Bash execution creates a record with `applicability="current"`. A later
+completed `file_write` or `apply_patch` operation with an observed content change
+marks earlier records `applicability="unknown"` and appends its path to
+`post_test_edits` in completion order. The original exit code and parser-backed
+`verified` result remain in the history. A new test execution creates a current
+record alongside the earlier records. Failed edits and writes with unchanged
+contents preserve existing applicability. Custom `CandidateRun` providers whose
+records omit these optional fields retain their existing comparison behavior.
+
+The mechanical public-test comparison uses current records. Earlier records
+with subsequent edits remain available to the existing adjudicator through both
+individual and shared evidence, inline or paged. The adjudicator assesses the
+final candidate and the recorded edits against the task requirements. This also
+applies to an observed notes-file write, whose effect on test inputs remains
+uncertain from the write facts alone.
+
+Correctness and compatibility determine the comparison. Architectural ambition,
+longer reports, more changes and more files confer no preference. A covered
+requirement has an evidence advantage over either `not_covered` or `unclear`
+when its own evidence cites the candidate's changed paths and explains the
+behavior they establish. This comparison applies symmetrically to A and B.
+An explicit `not_covered` requirement that the other candidate covers rejects
+the recommendation. A demonstrated advantage for A can select A. Equivalent
+evidence defaults to B, including a complete, valid requirement table with
+no supported advantage.
+
+An incomplete, contradictory or insufficiently anchored adjudication receives
+at most one additional adjudication session focused on the unresolved evidence.
+A session with paged evidence may use several file-tool reads. If the review still leaves the
+adjudication unusable, selection defaults to B. A provider exception goes
+directly to the same fallback. When the inspected evidence explicitly
+establishes a missing requirement in B that A covers, selection retains A,
+including when an additional session fails after that finding. The existing
+empty-candidate handling and comparable public-test failure preference precede
+adjudication. Identical diffs select B.
 
 The current prompt text is kept together in
 [`_prompts.py`](../opencollab/builtin_workflows/_prompts.py). Its internal revision
-is 6 and is recorded as `prompt_revision` in the result. Callers use `duo`
+is 8 and is recorded as `prompt_revision` in the result. Callers use `duo`
 without a prompt-version suffix.
 
-`requirements_complete` means that the adjudicator has accounted for every
-explicit requirement. It does not mean that either candidate satisfies every
-requirement. Shared gaps remain visible as `not_covered` or `unclear` entries
+`requirements_complete` records whether the adjudicator has accounted for every
+explicit requirement. Candidate correctness is recorded by the coverage entries
+and supporting evidence. Shared gaps remain visible as `not_covered` or `unclear` entries
 while the adjudicator compares concrete differences between the candidates.
 
 Set `submission_mode="working_tree"` when the caller captures the chosen diff
@@ -108,7 +148,14 @@ delivery instructions. The result records the mode used for that workflow call.
 ## Complete evidence for selection
 
 When mechanical selection leaves a choice open, Duo saves the complete candidate
-evidence and gives the read-only adjudicator `read_candidate_evidence`.
+evidence. When the complete comparison payload fits within 128,000 UTF-8 bytes,
+the read-only adjudicator receives both full diffs, each candidate's full public
+test records, the shared comparable records and both candidate reports inline.
+The reports are marked as model-supplied claims. The adjudicator compares this
+complete package directly through the structured-output interface.
+
+Larger comparison payloads give the adjudicator `read_candidate_evidence` for
+complete paged reads. The original evidence files are retained in both modes.
 Indexes describe original changed paths and character ranges. Text and binary
 diffs remain complete. Public test evidence and model-supplied result reports
 are separate files. The tool returns `next_offset` and `eof` for continued reads
@@ -128,6 +175,18 @@ by identity. Required files and live services are retained by that backend.
 Candidate validity and adoption are enforced by the runtime. Empty changes remain
 an incomplete result under the existing patch-based selection rules.
 
+Git candidates start with the source's current tracked and non-ignored untracked contents.
+Their delivered patches describe the subsequent candidate edits. Adoption applies
+that increment to the current source files and preserves independent user edits
+and the source index. A conflicting patch leaves the current source in place.
+Changes to ignore rules preserve files copied from the source and files added to
+the candidate index or commits. Newly created ignored files join delivery when
+explicitly added with `git add --force`.
+If the source changes while a candidate is running, the runtime reports the
+change and retains the candidate worktree. The error includes its original Git
+tree, which remains referenced by `refs/worktree/opencollab-source` in the
+retained worktree, for recovery with commands such as `git show <tree>:<path>`.
+
 `goal` supplies the task and `description` is an accepted alternative.
 `injected_test_paths` lets an evaluation integration preserve its protected test
 files during adoption. Budgets, model settings and role deadlines follow the
@@ -137,7 +196,8 @@ Duo's output records `winner` and `adopted` separately, because a failed adoptio
 may fall back to the other candidate. `status` is `done` after successful adoption,
 `incomplete` when no candidate is adopted, or `error` when the task is missing.
 The output also retains selection reasons, candidate evidence, adoption attempts
-and token consumption. Task correctness is established by the caller's actual
+and token consumption. Duo addresses candidate selection through behavior evidence
+and the default-B preference. Task correctness is established by the caller's actual
 checks and, when applicable, the evaluator's formal scoring.
 
 OpenCollab-Eval owns benchmark inputs, environment preparation, hidden-test

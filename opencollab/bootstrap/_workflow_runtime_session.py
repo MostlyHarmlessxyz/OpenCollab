@@ -20,6 +20,7 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.tool_execution_runtime import ToolRuntime
 from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow_budget import _positive_concurrency
 from opencollab.application.workflow_registry import WorkflowSpec
 from opencollab.bootstrap._workflow_runtime_state import WORKFLOW_AGENT_PROMPT
 from opencollab.bootstrap.agent_profiles import SingleAgentProfile
@@ -97,6 +98,7 @@ class WorkflowSessionFactory:
         provider_error_time_budget: float = 0.0,
         save_dir: str | None = None,
         env: Any | None = None,
+        llm_stream_chat: bool = False,
     ) -> None:
         self._model = model
         self._provider = provider
@@ -121,6 +123,7 @@ class WorkflowSessionFactory:
         self._llm_connect_timeout = llm_connect_timeout
         self._llm_first_event_timeout = llm_first_event_timeout
         self._llm_stream_idle_timeout = llm_stream_idle_timeout
+        self._llm_stream_chat = llm_stream_chat
         self._provider_error_time_budget = provider_error_time_budget
         self._provider_retry_budget = (
             RetryTimeBudget(provider_error_time_budget)
@@ -142,6 +145,8 @@ class WorkflowSessionFactory:
         # and an isolated teammate get the same kind of workspace, so a handoff
         # between two agents means the same thing in either arm.
         self._worktree_pool: WorktreePool | None = None
+        self._candidate_isolation_leases: list[tuple[Any, Any]] = []
+        self._owned_source_environment: LocalEnvironment | None = None
 
     @property
     def environment_revoked(self) -> bool:
@@ -176,7 +181,9 @@ class WorkflowSessionFactory:
             return None
         return workflow_transcript_path(self._save_dir, aid, label)
 
-    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
+    async def acquire_isolated_env(
+        self, *, label: str | None = None, environment: Any | None = None
+    ) -> Any:
         """Check out a working tree this agent alone edits.
 
         A linked worktree, so it shares ``.git/objects`` with the workspace it
@@ -190,6 +197,11 @@ class WorkflowSessionFactory:
         explicit workspace or current directory is copied or checked out into
         a private worktree; an isolation request never shares the source tree.
         """
+        if environment is not None:
+            workspace = EnvCandidateWorkspace(environment)
+            lease = await workspace.acquire(label or "workflow-agent")
+            self._candidate_isolation_leases.append((environment, lease))
+            return lease.environment
         if self._worktree_pool is None:
             self._worktree_pool = WorktreePool(
                 self._workspace or ".",
@@ -198,12 +210,35 @@ class WorkflowSessionFactory:
             )
         return await self._worktree_pool.acquire(label or "workflow-agent")
 
-    async def release_isolated_envs(self) -> None:
-        """Release worktrees while retaining the pool for retry or later use."""
-        pool = self._worktree_pool
-        if pool is None:
-            return
-        await pool.release()
+    async def release_isolated_envs(self, *, environment: Any | None = None) -> None:
+        """Release each owned environment and retain failed leases for retry."""
+        errors: list[Exception] = []
+        for owner, lease in tuple(self._candidate_isolation_leases):
+            if environment is not None and owner is not environment:
+                continue
+            try:
+                await lease.cleanup()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._candidate_isolation_leases.remove((owner, lease))
+        if environment is None and self._worktree_pool is not None:
+            try:
+                await self._worktree_pool.release()
+            except Exception as exc:
+                errors.append(exc)
+        # Keep the source usable until all candidate and isolated workspace
+        # owners have finished. Borrowed environments stay with their caller.
+        if environment is None and not errors and self._owned_source_environment is not None:
+            try:
+                await self._owned_source_environment.cleanup()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._owned_source_environment = None
+        if errors:
+            detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
+            raise OSError(f"isolated environment cleanup failed: {detail}") from errors[0]
 
     def build_workflow_session(
         self,
@@ -279,6 +314,7 @@ class WorkflowSessionFactory:
             llm_connect_timeout=self._llm_connect_timeout,
             llm_first_event_timeout=self._llm_first_event_timeout,
             llm_stream_idle_timeout=self._llm_stream_idle_timeout,
+            llm_stream_chat=self._llm_stream_chat,
             provider_error_time_budget=self._provider_error_time_budget,
             tool_choice=tool_choice,
         )
@@ -427,6 +463,7 @@ def build_workflow_context(
         llm_connect_timeout=float(cfg.get("llm_connect_timeout", 30.0)),
         llm_first_event_timeout=float(cfg.get("llm_first_event_timeout", 180.0)),
         llm_stream_idle_timeout=float(cfg.get("llm_stream_idle_timeout", 180.0)),
+        llm_stream_chat=bool(cfg.get("llm_stream_chat", False)),
         provider_error_time_budget=float(cfg.get("provider_error_time_budget", 0.0)),
         save_dir=save_dir,
         env=environment,
@@ -437,11 +474,17 @@ def build_workflow_context(
         in {"1", "true"}
         else budget if budget is not None else cfg.get("budget")
     )
+    # Validate the context's existing concurrency inputs before opening the
+    # source directory descriptor that the completed context will own.
+    max_concurrency = _positive_concurrency(max_concurrency, "max_concurrency")
+    if task_concurrency is not None:
+        task_concurrency = _positive_concurrency(task_concurrency, "task_concurrency")
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
     probe_env = environment
     if probe_env is None:
         probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
+        factory._owned_source_environment = probe_env
     candidate_root = getattr(probe_env, "workspace", None)
     tree_probe = (
         _CandidateSourceTreeProbe(candidate_workspace)

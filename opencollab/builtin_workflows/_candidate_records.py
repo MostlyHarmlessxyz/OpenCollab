@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from opencollab.workflows import CandidateRun
@@ -17,13 +18,17 @@ def _clip_text(value: Any, limit: int) -> str:
 
 
 def _public_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {
+    public = {
         "target": _clip_text(record.get("target"), 2_000),
         "runner": _clip_text(record.get("runner"), 200),
         "command": _clip_text(record.get("command"), MAX_PUBLIC_COMMAND_BYTES),
         "exit_code": record.get("exit_code"),
         "verified": record.get("verified") is True,
     }
+    for field in ("applicability", "post_test_edits"):
+        if field in record:
+            public[field] = copy.deepcopy(record[field])
+    return public
 
 
 def _candidate_output(candidate: CandidateRun) -> dict[str, Any]:
@@ -50,6 +55,8 @@ def _record_key(record: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def _record_state(record: dict[str, Any]) -> str | None:
+    if record.get("applicability", "current") != "current":
+        return None
     exit_code = record.get("exit_code")
     if not all(_record_key(record)) or isinstance(exit_code, bool) or not isinstance(exit_code, int):
         return None

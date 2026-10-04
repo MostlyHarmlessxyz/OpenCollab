@@ -186,8 +186,12 @@ print("RESULT:" + repr(value))
 
 def test_bounded_shutdown_cancels_task_spawned_during_cleanup():
     child_cancelled: list[bool] = []
+    owners: list[asyncio.Task] = []
+    parent_started = asyncio.Event()
+    child_started = asyncio.Event()
 
     async def child():
+        child_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
@@ -195,15 +199,21 @@ def test_bounded_shutdown_cancels_task_spawned_during_cleanup():
             raise
 
     async def parent():
+        parent_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            asyncio.create_task(child())
+            # all_tasks() retains weak references. Own the newly suspended
+            # task until shutdown can observe and cancel it on the next scan.
+            owners.append(asyncio.create_task(child()))
+            await child_started.wait()
 
     async def main():
-        asyncio.create_task(parent())
-        await asyncio.sleep(0)
+        owners.append(asyncio.create_task(parent()))
+        await parent_started.wait()
         return "done"
 
     assert run_with_bounded_shutdown(main(), shutdown_timeout=0.1) == "done"
+    assert child_started.is_set()
     assert child_cancelled == [True]
+    assert all(owner.done() for owner in owners)

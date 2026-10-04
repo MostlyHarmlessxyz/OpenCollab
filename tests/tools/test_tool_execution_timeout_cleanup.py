@@ -328,3 +328,100 @@ def test_application_tool_execution_module_does_not_import_outer_layers():
     assert "opencollab.tools" not in source
     assert "opencollab.bootstrap" not in source
     assert "opencollab.tui" not in source
+
+class FailingCancellationTool:
+    name = "failing_cleanup"
+    default_timeout = 0.005
+    disable_outer_timeout = False
+
+    def __init__(self, error_type):
+        self.started = asyncio.Event()
+        self.error_type = error_type
+
+    async def execute_with_runtime(self, args, runtime):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise self.error_type("command cancellation failed") from None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
+async def test_failed_cancellation_revokes_environment_and_retains_cause(monkeypatch, error_type):
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    environment = RevocableEnvironment()
+    tool = FailingCancellationTool(error_type)
+    use_case = _bounded_tool_use_case(tool, environment)
+
+    output, _latency = await use_case.execute_tool(tool, {})
+
+    assert "Tool cancellation cleanup failed" in output
+    assert f"{error_type.__name__}: command cancellation failed" in output
+    assert use_case.environment_revoked
+    assert environment._aborted
+    assert use_case.pending_cleanup_tasks == ()
+    with pytest.raises(RuntimeError):
+        await environment.write_file("late.py", "late")
+    next_output, _ = await use_case.execute_tool(RuntimeNativeTool(), {})
+    assert "environment has been revoked" in next_output
+
+
+@pytest.mark.asyncio
+async def test_caller_cancel_with_failed_cleanup_still_aborts_environment():
+    environment = RevocableEnvironment()
+    tool = FailingCancellationTool(RuntimeError)
+    tool.disable_outer_timeout = True
+    use_case = _bounded_tool_use_case(tool, environment)
+    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
+    await tool.started.wait()
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert use_case.environment_revoked
+    assert environment._aborted
+    assert use_case.pending_cleanup_tasks == ()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_failure_and_abort_failure_are_both_reported(monkeypatch):
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+
+    class FailingAbortEnvironment(RevocableEnvironment):
+        async def abort(self):
+            raise OSError("abort transport unavailable")
+
+    environment = FailingAbortEnvironment()
+    tool = FailingCancellationTool(RuntimeError)
+    use_case = _bounded_tool_use_case(tool, environment)
+
+    output, _ = await use_case.execute_tool(tool, {})
+
+    assert "RuntimeError: command cancellation failed" in output
+    assert "OSError: abort transport unavailable" in output
+    assert use_case.environment_revoked
+
+
+@pytest.mark.asyncio
+async def test_tool_that_returns_after_cancellation_keeps_environment_usable(monkeypatch):
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+
+    class ReturningCancellationTool(FailingCancellationTool):
+        async def execute_with_runtime(self, args, runtime):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return "resources released"
+
+    environment = RevocableEnvironment()
+    tool = ReturningCancellationTool(RuntimeError)
+    use_case = _bounded_tool_use_case(tool, environment)
+
+    output, _ = await use_case.execute_tool(tool, {})
+
+    assert output.startswith("Tool execution timed out after ")
+    assert "cleanup failed" not in output
+    assert not environment._aborted
+    await environment.write_file("still-usable.py", "ok")

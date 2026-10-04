@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from opencollab.application._scheduler_cleanup import SchedulerCleanupMixin
+from opencollab.application._scheduler_delivery_tree import SchedulerDeliveryTreeMixin
 from opencollab.application._scheduler_persistence import SchedulerPersistenceMixin
 from opencollab.application._scheduler_review import SchedulerReviewMixin
 from opencollab.application._scheduler_run import SchedulerRunMixin
@@ -37,6 +38,7 @@ from opencollab.application.ports import (
     PermissionPort,
     SessionFactoryPort,
     TracePort,
+    WorkingTreeProbe,
     WorktreePoolPort,
 )
 from opencollab.application.scheduler_dedup import InflightDedupMixin
@@ -57,6 +59,7 @@ class Scheduler(
     SchedulerTeamMixin,
     SchedulerRunMixin,
     SchedulerCleanupMixin,
+    SchedulerDeliveryTreeMixin,
     SchedulerReviewMixin,
     SchedulerStopNoticeMixin,
     LifecycleMixin,
@@ -113,6 +116,9 @@ class Scheduler(
         event_factory: SchedulerEventFactory | None = None,
         prebuild_team: bool = False,
         serialize_turns: bool = False,
+        delivery_tree_probe: WorkingTreeProbe | None = None,
+        role_budgets: Mapping[str, int] | None = None,
+        entry_role: str | None = None,
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
@@ -136,6 +142,9 @@ class Scheduler(
         # to each other is untouched: the topology keeps every declared edge and
         # ``message_agent`` stays voluntary — only the timing changes.
         self._serialize_turns = bool(serialize_turns)
+        self._delivery_tree_probe = delivery_tree_probe
+        self._delivery_tree_snapshots: list[dict[str, Any]] = []
+        self._delivery_tree_shas: dict[str, int] = {}
         # Created on first use: ``__init__`` may run without a running loop.
         self._prebuild_lock: asyncio.Lock | None = None
         self._turn_gate_lock: asyncio.Lock | None = None
@@ -155,6 +164,22 @@ class Scheduler(
             role_keys.add(collision_key)
             normalized_roles.append(role)
         self._roles = tuple(normalized_roles)
+        # Independent per-role allowances from the team file, or ``{}`` for the
+        # shared-pool rule. Each agent is held to its own role's allowance and
+        # to nothing else; see ``_agent_cap``.
+        self._role_budgets: dict[str, int] = dict(role_budgets or {})
+        self._entry_role = entry_role
+        if self._role_budgets:
+            if not self._prebuild_team:
+                raise ValueError(
+                    "per-role token budgets need a declared roster (prebuild_team): "
+                    "a role a model spawns mid-run has no allowance to be held to"
+                )
+            missing = [role for role in self._roles if role not in self._role_budgets]
+            if missing or entry_role not in self._role_budgets:
+                raise ValueError(
+                    f"per-role token budgets must cover every declared role; missing {missing or [entry_role]}"
+                )
 
         self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}

@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from opencollab.application.async_timeout import (
@@ -17,6 +17,7 @@ from opencollab.application.async_timeout import (
     consume_task_result,
 )
 from opencollab.application.ports import AskUserPort, EnvironmentPort, PermissionPort, SafetyPolicyPort
+from opencollab.domain.tool_facts import ToolFactsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +232,7 @@ class ToolRuntime:
     ask_policy: AskUserPort | None = None
     aid: int = -1
     tool_call_id: str | None = None
+    observations: ToolFactsCollector | None = None
 
     def confirm_fn(self):
         return None if self.permission_policy is None else self.permission_policy.confirm
@@ -250,6 +252,7 @@ class ToolExecutionRuntimeMixin:
         args: dict,
         *,
         tool_id: str | None = None,
+        observations: ToolFactsCollector | None = None,
     ) -> tuple[str, float]:
         """Run one tool, mapping any exception to an error string.
 
@@ -260,6 +263,8 @@ class ToolExecutionRuntimeMixin:
         if self.environment_revoked:
             return "Error: Skipped because the execution environment has been revoked.", 0.0
         runtime = self.tool_runtime(tool_call_id=tool_id)
+        if observations is not None:
+            runtime = replace(runtime, observations=observations)
         timeout = self.tool_execution_timeout(tool, args)
         execution_task: asyncio.Task[Any] | None = None
         try:
@@ -267,6 +272,8 @@ class ToolExecutionRuntimeMixin:
             execution_task = asyncio.ensure_future(execution)
             result = await self._await_execution_task(execution_task, timeout)
         except _ToolExecutionTimeoutError:
+            if observations is not None:
+                observations.record_timeout()
             tool_name = self._tool_display_name(tool)
             timeout_result = f"Tool execution timed out after {timeout:.1f}s while running '{tool_name}'."
             if execution_task is None:
@@ -282,7 +289,7 @@ class ToolExecutionRuntimeMixin:
                     result = timeout_result
                 else:
                     details = [
-                        "Tool cancellation cleanup failed to meet its bounded deadline",
+                        "Tool cancellation cleanup failed",
                         "the execution environment was revoked before returning",
                     ]
                     if revoke_error:
@@ -321,11 +328,21 @@ class ToolExecutionRuntimeMixin:
 
     async def _cleanup_timed_out_execution(self, task: asyncio.Task[Any]) -> tuple[bool, str | None, str | None]:
         task.cancel()
+        cleanup_error = None
         if await self._wait_task(task, self._cancellation_cleanup_timeout):
-            return True, None, None
-        self._track_pending_cleanup(task)
+            # A normal cancellation terminates the coroutine with CancelledError.
+            # An exception raised by its cleanup instead is not proof that its
+            # environment stopped. Preserve that failure and abort the environment.
+            if not task.cancelled():
+                cleanup_error = self._task_failure(task, label="tool cancellation cleanup")
+            if cleanup_error is None:
+                return True, None, None
+        else:
+            self._track_pending_cleanup(task)
         revoke_error = self._revoke_environment()
         abort_error = await self._abort_environment_bounded()
+        if cleanup_error:
+            abort_error = "; ".join(detail for detail in (cleanup_error, abort_error) if detail)
         return False, revoke_error, abort_error
 
     async def _await_owned_cleanup_despite_cancellation(self, cleanup_task: asyncio.Task[Any]) -> None:

@@ -8,6 +8,7 @@ import math
 import shlex
 from typing import Any, Awaitable, Callable
 
+from opencollab.application._tool_loop_execution import _LoopBatch
 from opencollab.application.async_timeout import (
     CallerTimeoutError as CallerTimeoutError,
 )
@@ -38,7 +39,9 @@ from opencollab.application.tool_execution_runtime import (
     ToolRuntime as ToolRuntime,
 )
 from opencollab.domain.session import SessionState
-from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolProcessingResult
+from opencollab.domain.tool_facts import ToolFactsCollector
+from opencollab.domain.tools import MAX_CALL_HASH_WINDOW as MAX_CALL_HASH_WINDOW
+from opencollab.domain.tools import LoopDetection, ToolProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +307,26 @@ def _bash_likely_mutates(args: dict) -> bool:
     return False
 
 
+_PREFLIGHT_ERROR_CODES = (
+    ("Error: unknown tool ", "unknown_tool"),
+    ("Error: invalid JSON arguments", "invalid_json_args"),
+    ("Error: tool arguments must be a JSON object", "non_object_args"),
+    ("schema validation failed", "schema_validation_failed"),
+    ("duplicate tool_call id", "duplicate_tool_call_id"),
+    ("batch has ", "batch_too_large"),
+)
+
+
+def _preflight_error_code(error: str) -> str:
+    """Name a ``preflight_tool_batch`` message with the trace code ``process`` uses."""
+    if not error:
+        return "rejected_with_batch"
+    for prefix, code in _PREFLIGHT_ERROR_CODES:
+        if error.startswith(prefix):
+            return code
+    return "malformed_call"
+
+
 class CallbackPermissionPolicy:
     def __init__(self, confirm_fn: Callable[[str], Awaitable[bool]]):
         self._confirm_fn = confirm_fn
@@ -353,6 +376,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             name="environment_abort_timeout",
         )
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self.loop_reservation_checkpoint: Callable[[list[dict]], Awaitable[None]] | None = None
 
     @property
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
@@ -369,9 +393,13 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         instead of raising — so no ``tool_call_id`` is ever left unanswered.
         Repeated identical calls past ``MAX_SIMILAR_CALLS`` short-circuit with
         a loop warning rather than executing. Nothing is applied to session
-        state here; the caller applies the returned ``ToolProcessingResult``.
+        state here except a reserved retry checkpoint; the caller applies the
+        remaining ``ToolProcessingResult``.
         """
-        result = ToolProcessingResult(tool_step_attempted=bool(tool_calls))
+        result = ToolProcessingResult(
+            tool_step_attempted=bool(tool_calls),
+            model_step=self.state.step_count if self.state.step_count > 0 else None,
+        )
         preflight_errors = (
             self.preflight_tool_batch(tool_calls)
             if len(tool_calls) > 1
@@ -379,7 +407,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         )
         if any(preflight_errors):
             return self.preflight_rejection_result(tool_calls, preflight_errors)
-        recent_call_hashes = list(self.state.turn.recent_call_hashes)
+        loop_batch = _LoopBatch(self, result)
 
         for index, tc in enumerate(tool_calls):
             func = tc["function"]
@@ -415,41 +443,45 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 })
                 continue
 
-            call_hash = self.tool_call_hash(tool_name, args)
-            result.recent_hash_updates.append(call_hash)
-            recent_call_hashes.append(call_hash)
-            if len(recent_call_hashes) > MAX_CALL_HASH_WINDOW:
-                recent_call_hashes = recent_call_hashes[-MAX_CALL_HASH_WINDOW:]
-
-            recent_same = self.count_recent_similar_calls(recent_call_hashes, call_hash)
-            # A few revisits to a read range are normal during implementation.
-            limit = (
-                MAX_SAME_FILE_READS
-                if tool_name in _RANGED_READ_TOOLS
-                else MAX_SIMILAR_CALLS
-            )
-            if recent_same >= limit:
-                detail = (
-                    "on the same file and line range"
-                    if tool_name in _RANGED_READ_TOOLS
-                    else "with identical arguments"
-                )
-                warning = (
-                    f"[Loop detected: tool '{tool_name}' called {recent_same} times {detail}. "
-                    f"You are stuck in a loop. Try a completely different approach or ask for help.]"
-                )
-                self._trace_short_circuit(
-                    "loop_blocked", tool_name, {"args": args, "count": recent_same}
-                )
-                result.messages_to_append.append({"role": "tool", "tool_call_id": tool_id, "content": warning})
-                result.loop_detections.append(LoopDetection(tool=tool_name, count=recent_same))
-                await self._emit_observation(
-                    lambda: self.event_factory.loop_detected(tool_name, recent_same),
-                    label="loop_detected",
-                )
-                continue
-
             tool = self.find_tool(tool_name)
+            schema = getattr(tool, "parameters", None)
+            schema_errors = validate(args, schema) if isinstance(schema, dict) else []
+            call_hash = self.tool_call_hash(tool_name, args)
+            recent_same = loop_batch.append(call_hash)
+            limit = MAX_SAME_FILE_READS if tool_name in _RANGED_READ_TOOLS else MAX_SIMILAR_CALLS
+            if tool is None or schema_errors:
+                permission = "blocked" if recent_same >= limit else None
+            else:
+                permission = loop_batch.reserve(call_hash, tool_name, tool, args, tool_id, recent_same, limit)
+            if permission in {"blocked", "inflight", "capacity"}:
+                if permission == "capacity":
+                    warning = (
+                        "Error: unresolved executions fill the bounded repeat history; "
+                        "reconcile pending operations before adding another tracked call."
+                    )
+                    result.effect_unknown = True
+                elif permission == "inflight":
+                    warning = (
+                        "Error: the previous execution outcome is unresolved; "
+                        "inspect it before repeating this operation."
+                    )
+                    result.effect_unknown = True
+                else:
+                    detail = (
+                        "on the same file and line range"
+                        if tool_name in _RANGED_READ_TOOLS else "with identical arguments"
+                    )
+                    warning = (
+                        f"[Loop detected: tool '{tool_name}' called {recent_same} times {detail}. "
+                        "You are stuck in a loop. Try a completely different approach or ask for help.]"
+                    )
+                    self._trace_short_circuit("loop_blocked", tool_name, {"args": args, "count": recent_same})
+                    result.loop_detections.append(LoopDetection(tool=tool_name, count=recent_same))
+                    await self._emit_observation(
+                        lambda: self.event_factory.loop_detected(tool_name, recent_same), label="loop_detected",
+                    )
+                result.messages_to_append.append(self.tool_result_message(tool_id, warning))
+                continue
             if not tool:
                 self._trace_short_circuit(
                     "tool_error", tool_name, {"error": "unknown_tool", "args": args}
@@ -461,24 +493,24 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 })
                 continue
 
-            schema = getattr(tool, "parameters", None)
-            if isinstance(schema, dict):
-                schema_errors = validate(args, schema)
-                if schema_errors:
-                    detail = "; ".join(schema_errors)[:1_000]
-                    self._trace_short_circuit(
-                        "tool_error",
-                        tool_name,
-                        {"error": "schema_validation_failed", "args": args},
-                    )
-                    result.messages_to_append.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_id,
-                            "content": "Error: schema validation failed: " + detail,
-                        }
-                    )
-                    continue
+            if schema_errors:
+                detail = "; ".join(schema_errors)[:1_000]
+                self._trace_short_circuit(
+                    "tool_error",
+                    tool_name,
+                    {"error": "schema_validation_failed", "args": args},
+                )
+                result.messages_to_append.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": "Error: schema validation failed: " + detail,
+                    }
+                )
+                continue
+
+            if permission is not None:
+                await loop_batch.checkpoint()
 
             observation_args = sanitize_observation_args(args)
             await self._emit_observation(
@@ -490,28 +522,40 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 label="tool_start",
             )
 
-            tool_output, tool_latency = await self.execute_tool(tool, args, tool_id=tool_id)
+            observations = ToolFactsCollector()
+            try:
+                tool_output, tool_latency = await self.execute_tool(
+                    tool, args, tool_id=tool_id, observations=observations,
+                )
+            finally:
+                facts = observations.close()
+            result_key = _result_content_hash(tool_output)
+            tool_succeeded = not tool_output.startswith(_TOOL_ERROR_PREFIXES)
+            loop_batch.finish(
+                call_hash, tool_name, tool, tool_id, facts, result_key, completed=tool_succeeded,
+            )
             # The full result is persisted; a per-tool-result budget shaper caps
             # what the model sees at call time (see application.shaping).
 
             # Closed-loop steering signal: a successful read accumulates the
             # reads-without-write counter; a successful edit resets it (recorded on
             # the result; applied to state by ToolProcessingResult.apply_to).
-            tool_succeeded = not tool_output.startswith(_TOOL_ERROR_PREFIXES)
+            effect_unknown = facts.observed and facts.content_changed is None
             if tool_name in _READ_TOOLS and tool_succeeded:
                 result.reads_executed += 1
                 result.read_write_signals.append("read")
-            elif tool_name in _WRITE_TOOLS and tool_succeeded:
+            if facts.content_changed is True:
                 result.write_succeeded = True
                 result.read_write_signals.append("write")
-            elif (
-                tool_name == "bash"
-                and _bash_likely_mutates(args)
-                and tool_succeeded
+            elif effect_unknown:
+                result.effect_unknown = True
+                result.read_write_signals.append("unknown")
+            elif not facts.observed and tool_succeeded and (
+                tool_name in _WRITE_TOOLS
+                or tool_name == "bash" and _bash_likely_mutates(args)
             ):
-                # bash that writes to disk (sed -i, redirect, python RMW) lands a
-                # real edit the same as file_write/apply_patch — reuse the reset
-                # path so the reads-without-write counter zeroes (Bug B, OPTION 2).
+                # Preserve string-only custom executors without granting a
+                # confirmed edit permission from a textual success heuristic.
                 result.write_succeeded = True
                 result.read_write_signals.append("write")
 
@@ -522,11 +566,13 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             # intrinsically low-yield. Observational — no behavior change here.
             result.evidence_signals.append(
                 (
-                    _result_content_hash(tool_output),
+                    result_key,
                     call_hash,
-                    _intrinsic_low_yield(tool_name, tool_output),
+                    _intrinsic_low_yield(tool_name, tool_output)
+                    or facts.write_completed is True and facts.content_changed is False,
                 )
             )
+            result.evidence_neutral.append(effect_unknown)
             # STEP 2 evidence ledger: the index-aligned raw card (tool/target/
             # snippet). Its outcome (hit | NO-MATCH | duplicate) is decided at fold
             # time from the SAME novelty signals above, so capture cannot disagree
@@ -554,13 +600,14 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 )
 
             result.messages_to_append.append(self.tool_result_message(tool_id, tool_output))
+            loop_batch.sync_completed_prefix()
             await self._emit_observation(
                 lambda: self.event_factory.tool_end(
                     tool_name, tool_latency, tool_id
                 ),
                 label="tool_end",
             )
-            submitted = getattr(tool, "turn_submitted", False)
+            submitted = tool_succeeded and facts.submitted_summary is not None
             if getattr(tool, "terminal_capture_accepted", False) or submitted:
                 result.terminal_capture_accepted = True
                 if submitted:
@@ -568,7 +615,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     # this can run -- same reason a structured capture ends the
                     # batch, one step further out.
                     result.turn_submitted = True
-                    result.submitted_summary = getattr(tool, "submitted_summary", None)
+                    result.submitted_summary = facts.submitted_summary
                 for skipped in tool_calls[index + 1 :]:
                     result.messages_to_append.append(
                         {
@@ -579,6 +626,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     )
                 break
 
+        loop_batch.publish()
         return result
 
     def preflight_tool_batch(self, tool_calls: object) -> list[str]:
@@ -648,23 +696,44 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     )[:1_000]
         return errors
 
-    @staticmethod
     def preflight_rejection_result(
+        self,
         tool_calls: list[dict],
         preflight_errors: list[str],
     ) -> ToolProcessingResult:
-        """Build ordered no-side-effect responses for a rejected batch."""
+        """Build ordered no-side-effect responses for a rejected batch.
+
+        Every refused call also leaves a ``tool_error`` trace step, so a call
+        refused here is as visible in the trajectory as one refused inside
+        ``process``. Calls that were valid but refused with their batch carry
+        ``error="rejected_with_batch"``.
+        """
         result = ToolProcessingResult(tool_step_attempted=bool(tool_calls))
         summary = "; ".join(
             f"call {index}: {error}"
             for index, error in enumerate(preflight_errors)
             if error
         )[:2_000]
+        batched = len(tool_calls) > 1
         for index, tc in enumerate(tool_calls):
             tool_id = (
                 tc.get("id")
                 if isinstance(tc, dict) and isinstance(tc.get("id"), str)
                 else f"invalid-tool-call-{index}"
+            )
+            func = tc.get("function") if isinstance(tc, dict) else None
+            tool_name = func.get("name") if isinstance(func, dict) else None
+            self._trace_short_circuit(
+                "tool_error",
+                tool_name if isinstance(tool_name, str) else "",
+                {
+                    "error": _preflight_error_code(preflight_errors[index]),
+                    "detail": preflight_errors[index][:500],
+                    "tool_call_id": tool_id,
+                    "batch_rejected": batched,
+                    "batch_index": index,
+                    "batch_size": len(tool_calls),
+                },
             )
             result.messages_to_append.append(
                 {
@@ -672,7 +741,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     "tool_call_id": tool_id,
                     "content": (
                         preflight_errors[index]
-                        if len(tool_calls) == 1
+                        if not batched
                         else "Error: entire tool-call batch rejected before execution: "
                         + summary
                     ),
@@ -698,6 +767,9 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             {"path": args.get("path"), "offset": args.get("offset", 1), "limit": args.get("limit", 500)}
             if tool_name in _RANGED_READ_TOOLS else args
         )
+        tool = self.find_tool(tool_name)
+        if getattr(tool, "loop_timeout_is_control", False) is True:
+            key_args = {name: value for name, value in args.items() if name != "timeout"}
         return hashlib.md5(
             json.dumps({"name": tool_name, "args": key_args}, sort_keys=True).encode()
         ).hexdigest()

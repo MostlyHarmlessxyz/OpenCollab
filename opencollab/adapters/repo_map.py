@@ -59,14 +59,18 @@ MAP_HEADER = "## Repository layout"
 _TRUNCATED_MARKER = "... (repository map truncated; traversal budget reached)"
 
 
-def _keep(name: str) -> bool:
-    if name in SKIP_DIR_NAMES:
+def _keep(name: str, *, is_directory: bool = False) -> bool:
+    if is_directory and name in SKIP_DIR_NAMES:
         return False
     return not name.startswith(".") or name in VISIBLE_DOT_NAMES
 
 
 def _keep_relative_path(path: str) -> bool:
-    return all(_keep(part) for part in path.split("/") if part and part != ".")
+    parts = [part for part in path.split("/") if part and part != "."]
+    return all(
+        _keep(part, is_directory=index < len(parts) - 1)
+        for index, part in enumerate(parts)
+    )
 
 
 def _render_bounded_lines(lines: list[str], max_chars: int) -> str:
@@ -218,10 +222,10 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
                 except StopIteration:
                     break
                 budget.scanned_entries += 1
-                if not _keep(entry.name):
+                is_directory = entry.is_dir(follow_symlinks=False)
+                if not _keep(entry.name, is_directory=is_directory):
                     continue
                 kept_entries += 1
-                is_directory = entry.is_dir(follow_symlinks=False)
                 if is_directory:
                     kept_directories += 1
                 else:
@@ -340,10 +344,10 @@ async def build_repo_map_via_env(
         f"! -name '{name}'" for name in sorted(VISIBLE_DOT_NAMES)
     )
     hidden_prune = rf"\( -name '.*' {allowed_hidden} \)"
-    prunes = " -o ".join(
-        [hidden_prune]
-        + [f"-name '{name}'" for name in sorted(SKIP_DIR_NAMES)]
+    directory_names = " -o ".join(
+        f"-name '{name}'" for name in sorted(SKIP_DIR_NAMES)
     )
+    prunes = rf"{hidden_prune} -o \( -type d \( {directory_names} \) \)"
     # -mindepth 1 keeps "." itself out of the prune tests — without it the
     # '.*' pattern matches the root and prunes the entire tree.
     if any(

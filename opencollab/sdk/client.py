@@ -73,16 +73,27 @@ def _path(value: str | os.PathLike[str] | None, name: str) -> Path | None:
     return Path(parsed).resolve()
 
 
+def _public_agent_failure(item: dict[str, Any]) -> dict[str, Any]:
+    record = {key: item.get(key) for key in (
+        "label", "exception_type", "status_code", "provider_error_type",
+    )}
+    chain = item.get("exception_chain")
+    if isinstance(chain, list):
+        nodes = []
+        for value in chain[:32]:
+            if not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("type", "module")):
+                continue
+            node = {"type": value["type"][:128], "module": value["module"][:256]}
+            node.update({key: value[key] for key in ("errno", "status_code")
+                         if isinstance(value.get(key), int) and not isinstance(value[key], bool)})
+            nodes.append(node)
+        if nodes:
+            record["exception_chain"] = nodes
+    return record
+
+
 def _public_result(result: ProgrammaticResult) -> RunResult[Any]:
-    agent_failures = tuple(
-        {
-            "label": item.get("label"),
-            "exception_type": item.get("exception_type"),
-            "status_code": item.get("status_code"),
-            "provider_error_type": item.get("provider_error_type"),
-        }
-        for item in result.agent_failures
-    )
+    agent_failures = tuple(_public_agent_failure(item) for item in result.agent_failures)
     return RunResult(
         output=result.output,
         status=result.status,
@@ -152,6 +163,7 @@ class OpenCollab:
             "llm_connect_timeout",
             "llm_first_event_timeout",
             "llm_stream_idle_timeout",
+            "llm_stream_chat",
             "context_window",
             "llm_max_retries",
             "provider_error_time_budget",
@@ -293,8 +305,9 @@ class OpenCollab:
         use_worktrees: bool = True,
         prebuild_team: bool = False,
         allow_unisolated_shell: bool | None = None,
-        max_steps: int = SESSION_MAX_STEPS,
+        max_steps: int | None = SESSION_MAX_STEPS,
         serialize_turns: bool = False,
+        record_delivery_tree: bool = False,
     ) -> RunResult[str]:
         """Run one scheduler-controlled team turn.
 
@@ -329,6 +342,20 @@ class OpenCollab:
         hand work to each other is still theirs to decide. Off by default. The
         run records which way it was set, under
         ``assigned.topology_nodes.turns_serialized``.
+
+        ``budget`` is the team's shared token pool. A team file that declares
+        per-role allowances (``budget.tokens``) sets the budget itself — each
+        agent is held to its own allowance and the total is their sum — so
+        passing ``budget`` with such a file raises ``ValueError``.
+
+        ``record_delivery_tree`` returns ``metrics["tree_snapshots"]``: the diff
+        of the tree this run is graded on — agent 0's — taken before every turn
+        and at every teammate message that was queued. Two consecutive rows
+        bracket one seat's working period, so a line in the delivered patch can
+        be attributed to the seat that was working when it arrived, and the row
+        at the first message answers what had already been done before anyone
+        was asked. Off by default: it costs a ``git diff`` per boundary, and off
+        the key is absent rather than empty.
         """
         _non_empty(prompt, "prompt")
         if not isinstance(trace, bool) or not isinstance(use_worktrees, bool):
@@ -337,9 +364,11 @@ class OpenCollab:
             raise ValueError("prebuild_team must be a boolean")
         if not isinstance(serialize_turns, bool):
             raise ValueError("serialize_turns must be a boolean")
+        if not isinstance(record_delivery_tree, bool):
+            raise ValueError("record_delivery_tree must be a boolean")
         if allow_unisolated_shell is not None and not isinstance(allow_unisolated_shell, bool):
             raise ValueError("allow_unisolated_shell must be a boolean or None")
-        resolved_team_max_steps = _positive_int(max_steps, "max_steps")
+        resolved_team_max_steps = None if max_steps is None else _positive_int(max_steps, "max_steps")
         team_path = _path(config, "config")
         try:
             result = await run_team(
@@ -364,6 +393,8 @@ class OpenCollab:
                 max_steps=resolved_team_max_steps,
                 serialize_turns=serialize_turns,
                 environment=self._environment,
+                record_delivery_tree=record_delivery_tree,
+                budget_explicit=budget is not None,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

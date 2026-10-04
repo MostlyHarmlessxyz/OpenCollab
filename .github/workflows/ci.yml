@@ -25,7 +25,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
@@ -39,6 +39,13 @@ jobs:
         run: uv run deptry .
       - name: Test
         run: uv run pytest -q
+      - name: Blueprint DOM regressions (Node 20 or newer)
+        if: matrix.python-version == '3.12'
+        env:
+          OPENCOLLAB_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          npm ci --prefix tests/workflows/blueprint_dom --no-audit --no-fund
+          npm test --prefix tests/workflows/blueprint_dom
 
   distribution:
     name: Distribution artifacts
@@ -49,7 +56,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.12"
           enable-cache: true
@@ -284,6 +291,21 @@ jobs:
           assert expected_names <= listed_names, workflow_list.stdout
           print("Installed package and SDK probes passed.")
           PY
+      - name: Exercise the minimum Typer with Click 8.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifact_root="$RUNNER_TEMP/opencollab-dist"
+          minimum_root="$RUNNER_TEMP/opencollab-minimum-typer"
+          probe_script="$GITHUB_WORKSPACE/tests/support/installed_cli_smoke.py"
+          wheels=("$artifact_root"/wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          uv venv --no-project --python 3.12 "$minimum_root"
+          uv pip install --python "$minimum_root/bin/python" --link-mode copy \
+            "${wheels[0]}" "typer==0.18.0" "click==8.5.0"
+          cd "$RUNNER_TEMP"
+          "$minimum_root/bin/python" "$probe_script"
 
   macos-integrity:
     name: macOS platform integrity
@@ -294,7 +316,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.12"
           enable-cache: true

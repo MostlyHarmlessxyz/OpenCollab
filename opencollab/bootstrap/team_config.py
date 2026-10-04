@@ -30,6 +30,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from opencollab.adapters.safe_files import read_regular_text
+from opencollab.bootstrap.context_policy import ContextPolicy, resolve_context_policy
 from opencollab.bootstrap.tool_registry import (
     COORDINATION_TOOL_NAMES,
     KNOWN_TOOL_NAMES,
@@ -94,6 +95,27 @@ def _validate_thinking_params(
     return value
 
 
+def _normalize_profile(value: str | None) -> str | None:
+    """Validate a role's ``profile`` name, resolving ``"default"`` to ``None``.
+
+    The name is checked against the same resolver the SDK and the workflow
+    runtime use, so a team file cannot name a profile those two do not have.
+    Imported inside the function because the profiles module reaches into the
+    adapters for a profile's tools and safety wrapper, and this module is
+    imported by the tool registry's own callers at startup.
+    """
+    if value is None:
+        return None
+    name = value.strip().lower()
+    if not name:
+        raise ValueError("role profile must not be blank")
+
+    from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+    resolve_agent_profile(name)
+    return None if name == "default" else name
+
+
 def _load_default_prompt(filename: str) -> str:
     return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
 
@@ -125,6 +147,24 @@ class RoleConfig(BaseModel):
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
+    # Optional agent profile for this seat. ``None`` is OpenCollab's own agent;
+    # a named profile supplies the base system prompt, the shaper, the safety
+    # wrapper and the tool output caps the seat runs under, and the role's own
+    # card is appended to that base rather than replacing it. Resolved in
+    # ``ContextBuilder`` (prompt, tool limits) and ``DefaultSessionFactory``
+    # (shaper, safety), which is where the profile's other halves are wired.
+    profile: str | None = None
+    # This role's own token allowance, from the team file (``budget.tokens`` at
+    # the team level, overridable per role). ``None`` on every role leaves the
+    # team on the shared ``per_agent_cap`` rule; see ``TeamConfig.role_budgets``.
+    budget_tokens: int | None = Field(default=None, gt=0)
+
+    @field_validator("budget_tokens", mode="before")
+    @classmethod
+    def _reject_boolean_budget(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("role budget must not be a boolean")
+        return value
 
     @field_validator("prompt")
     @classmethod
@@ -132,6 +172,11 @@ class RoleConfig(BaseModel):
         if not value.strip():
             raise ValueError("role prompt must not be blank")
         return value
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, value: str | None) -> str | None:
+        return _normalize_profile(value)
 
     @field_validator("model")
     @classmethod
@@ -158,6 +203,21 @@ class RoleConfig(BaseModel):
             raise ValueError("role temperature must not be a boolean")
         return value
 
+class _BudgetFileModel(BaseModel):
+    """On-disk ``budget`` entry, at the team level or on one role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tokens: int = Field(gt=0)
+
+    @field_validator("tokens", mode="before")
+    @classmethod
+    def _reject_boolean_tokens(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("budget tokens must not be a boolean")
+        return value
+
+
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
 
@@ -175,6 +235,13 @@ class _RoleFileModel(BaseModel):
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
+    profile: str | None = None
+    budget: _BudgetFileModel | None = None
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, value: str | None) -> str | None:
+        return _normalize_profile(value)
 
     @field_validator("prompt")
     @classmethod
@@ -242,11 +309,22 @@ class _TeamFileModel(BaseModel):
     # team tune output budgets to its backend's context size (see
     # ``bootstrap.tool_registry.build_tools_for_role``).
     tool_limits: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # The context policy every seat's session runs (see
+    # ``bootstrap.context_policy``): a name, or ``{policy:, tool_result_budget:}``.
+    context: Any = None
+    # Every role's token allowance unless the role states its own. Declaring
+    # any allowance makes them independent: see ``TeamConfig.role_budgets``.
+    budget: _BudgetFileModel | None = None
 
     @field_validator("tool_limits", mode="before")
     @classmethod
     def _validate_tool_limits(cls, value: object) -> dict[str, dict[str, int]]:
         return validate_tool_limits(value)
+
+    @field_validator("context")
+    @classmethod
+    def _validate_context(cls, value: object) -> ContextPolicy:
+        return resolve_context_policy(value)
 
 
 @dataclass(frozen=True)
@@ -263,6 +341,9 @@ class TeamConfig:
     entry: str | None = None
     # Tool name -> constructor kwargs (output caps); applied by the registry.
     tool_limits: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Applied to every seat; the default is the pipeline every session ran
+    # before a team file could name one.
+    context: ContextPolicy = field(default_factory=ContextPolicy)
 
     def __post_init__(self) -> None:
         normalized_tool_limits = validate_tool_limits(self.tool_limits)
@@ -326,6 +407,27 @@ class TeamConfig:
             "topology",
             Topology(edges=canonical_edges, allow_all=self.topology.allow_all),
         )
+        unbudgeted = [
+            name for name, role in self.roles.items() if role.budget_tokens is None
+        ]
+        if unbudgeted and len(unbudgeted) < len(self.roles):
+            raise ValueError(
+                f"roles {unbudgeted} have no token budget while others do; set "
+                "budget.tokens at the team level or on each role"
+            )
+
+    @property
+    def role_budgets(self) -> dict[str, int]:
+        """Each role's independent token allowance, or ``{}`` if none is declared.
+
+        Declared allowances are independent: each agent is held to its own and
+        to nothing else, and the team's total is their sum. Undeclared, the team
+        keeps one shared pool divided by ``per_agent_cap``.
+        """
+        budgets = {name: role.budget_tokens for name, role in self.roles.items()}
+        if any(tokens is None for tokens in budgets.values()):
+            return {}
+        return {name: int(tokens) for name, tokens in budgets.items() if tokens is not None}
 
     def role_for(self, name: str) -> RoleConfig:
         """Return the declared role, or a generic fallback for ad-hoc roles."""
@@ -504,6 +606,12 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
             thinking=entry.thinking,
             thinking_params=entry.thinking_params,
             tools=list(entry.tools),
+            profile=entry.profile,
+            budget_tokens=(
+                entry.budget.tokens
+                if entry.budget is not None
+                else model.budget.tokens if model.budget is not None else None
+            ),
         )
 
     edges: dict[str, frozenset[str]] = {}
@@ -539,6 +647,7 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
         hooks=_build_hook_specs(model.hooks),
         entry=_resolve_entry_role(model.entry, roles),
         tool_limits={name: dict(kwargs) for name, kwargs in model.tool_limits.items()},
+        context=resolve_context_policy(model.context),
     )
 
 

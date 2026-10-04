@@ -525,6 +525,7 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
         messages=[{"role": "system", "content": "sys"}],
         turn=TurnEnforcementState(loop_blocked_since_progress=3),
     )
+    state.turn.loop_state.blocked_rounds = 3
     llm = FakeLLM()
     runner = build_runner(state=state, llm=llm, event_bus=bus)
 
@@ -533,8 +534,8 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
     assert result == ""
     assert llm.calls == []
     assert state.phase is SessionPhase.STOPPED
-    assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
-    assert events == [("error", {"reason": "loop block limit reached: 3 repeated tool calls", "aid": -1})]
+    assert state.terminal_reason == "loop block limit reached: 3 unproductive tool batches"
+    assert events == [("error", {"reason": "loop block limit reached: 3 unproductive tool batches", "aid": -1})]
 
 def test_run_loop_llm_step_events_trace_and_message_shape():
     events, bus = collect_events()
@@ -593,12 +594,18 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
                 "model": "fake-model",
                 "thinking": False,
                 "reasoning_effort_policy": "configured",
+                # ``None`` because this stub response never went through
+                # ``LLMClient``; a real call carries the first-token timing here.
+                "transport_timing": None,
                 "finish_reason": "tool_calls",
             "role": "fake-model",
             "session_step": 1,
             "response_session_id": tracer.steps[1]["payload"]["response_session_id"],
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],
+            "request_tool_names": ["fake_tool"],
+            "request_tool_choice": None,
+            "request_observation_stage": "application",
             "usage": {
                 "input_tokens": 1,
                 "output_tokens": 0,
