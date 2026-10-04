@@ -128,7 +128,7 @@ async def _raw_diff_at(
         ),
         "candidate untracked listing",
     )
-    parts = [tracked.rstrip("\n")] if tracked.strip() else []
+    parts = [tracked] if tracked.strip() else []
     for path in (item for item in untracked.split("\0") if item):
         patch = _complete(
             await environment.exec_cmd(
@@ -141,8 +141,8 @@ async def _raw_diff_at(
             allowed=(0, 1),
         )
         if patch.strip():
-            parts.append(patch.rstrip("\n"))
-    return "\n".join(parts) + ("\n" if parts else "")
+            parts.append(patch)
+    return "".join(parts)
 
 
 @dataclass(slots=True)
