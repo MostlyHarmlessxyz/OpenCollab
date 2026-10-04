@@ -761,7 +761,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         # to the provider, and the run loop must not execute partial arguments.
         # Preserve only user-visible partial text; the full raw response remains
         # available in the trace for diagnosis.
-        if response.finish_reason in {"length", "max_tokens"}:
+        if response.finish_reason in {"length", "max_tokens", "model_context_window_exceeded"}:
             if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return
