@@ -123,6 +123,7 @@ def _build_chat_response(
     usage_message: Any,
     request_messages: list[dict],
     tools: list[dict] | None,
+    refusal: str | None = None,
 ) -> LLMResponse:
     """Turn already-extracted response fields into an ``LLMResponse``.
 
@@ -136,6 +137,9 @@ def _build_chat_response(
     assistant message (SDK object or plain dict) used to estimate output tokens
     when the endpoint reports none.
     """
+    if not (content or "").strip() and isinstance(refusal, str) and refusal.strip():
+        content = refusal
+
     # kimi (DashScope compat) sometimes emits tool calls as literal special-token
     # markup instead of structured ``tool_calls`` — in ``content`` or, under
     # thinking mode, inside ``reasoning_content`` (finish_reason='stop', empty
@@ -202,6 +206,7 @@ def _parse_response(
         usage_message=message,
         request_messages=request_messages,
         tools=tools,
+        refusal=getattr(message, "refusal", None),
     )
 
 

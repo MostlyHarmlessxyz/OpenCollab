@@ -57,6 +57,7 @@ class _ToolCallSlot:
 @dataclass
 class _ChatStreamState:
     content_parts: list[str] = field(default_factory=list)
+    refusal_parts: list[str] = field(default_factory=list)
     reasoning_parts: list[str] = field(default_factory=list)
     reasoning_field: str | None = None
     tool_slots: dict[int, _ToolCallSlot] = field(default_factory=dict)
@@ -172,6 +173,10 @@ def _absorb_chunk(chunk: Any, state: _ChatStreamState) -> None:
         if isinstance(text, str) and text:
             state.content_parts.append(text)
 
+        refusal = getattr(delta, "refusal", None)
+        if isinstance(refusal, str) and refusal:
+            state.refusal_parts.append(refusal)
+
         _absorb_reasoning_delta(delta, state)
 
         for call_delta in getattr(delta, "tool_calls", None) or ():
@@ -263,6 +268,7 @@ def _stream_state_to_response(
     # rescue and history rungs, but the trajectory stores this value verbatim
     # and '"content": ""' is not '"content": null' to an analysis script.
     content: str | None = "".join(state.content_parts) or None
+    refusal: str | None = "".join(state.refusal_parts) or None
     reasoning: str | None = "".join(state.reasoning_parts) or None
     tool_calls = _finalize_tool_calls(state, tools)
 
@@ -275,11 +281,13 @@ def _stream_state_to_response(
         usage_source=_UsageCarrier(usage=state.usage_object),
         usage_message={
             "content": content,
+            "refusal": refusal,
             "reasoning_content": reasoning,
             "tool_calls": tool_calls or None,
         },
         request_messages=request_messages,
         tools=tools,
+        refusal=refusal,
     )
 
     # The stream asked for usage explicitly. Not getting it means the budget
