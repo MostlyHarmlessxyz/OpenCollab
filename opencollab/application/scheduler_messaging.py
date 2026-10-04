@@ -537,11 +537,19 @@ class MessagingMixin:
             batch = candidate
         return batch
 
-    async def _drain_message_inbox(self, aid: int, *, allow_current_task: bool = False) -> None:
+    async def _drain_message_inbox(
+        self,
+        aid: int,
+        *,
+        allow_current_task: bool = False,
+        allow_stopped: bool = False,
+    ) -> None:
         lock = self._locks.setdefault(aid, asyncio.Lock())
         async with lock:
             events = await self._drain_message_inbox_locked(
-                aid, allow_current_task=allow_current_task
+                aid,
+                allow_current_task=allow_current_task,
+                allow_stopped=allow_stopped,
             )
         for event in events:
             await self._safe_emit_scheduler_event(event)
@@ -564,6 +572,7 @@ class MessagingMixin:
         aid: int,
         *,
         allow_current_task: bool = False,
+        allow_stopped: bool = False,
     ) -> list[object]:
         inbox = self._message_inbox.get(aid)
         if not inbox:
@@ -612,6 +621,8 @@ class MessagingMixin:
             inbox[:] = retained
             self._autosave_session(aid)
         if not inbox:
+            return events
+        if scb.state.phase in {SessionPhase.STOPPED, SessionPhase.ERROR} and not allow_stopped:
             return events
         task = self._tasks.get(aid)
         current_task = asyncio.current_task()

@@ -208,3 +208,193 @@ def test_targeted_cancel_event_settles_suspended_descendants_before_they_finish(
         assert await scheduler.run("retry") == "retry answer"
 
     run(scenario())
+
+
+def test_cancel_settlement_reconciles_queued_inbox_and_notifies_unanswered_sender():
+    child_started = asyncio.Event()
+    release_child = asyncio.Event()
+
+    class CancelAwareSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            step = self._steps.pop(0)
+            return await step(self, cancel_event)
+
+    async def suspend_on_child(sess, _cancel_event):
+        child_aid = await sess.scheduler.spawn(
+            sess.state.aid, "coder", "blocked child", tool_call_id="blocked-child"
+        )
+        sess.state.pending_events.add(
+            PendingRow("blocked-child", RowKind.CHILD_AGENT, 0, child_aid)
+        )
+        sess.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        return ""
+
+    async def blocked_child(_sess):
+        child_started.set()
+        await release_child.wait()
+        return "late child result"
+
+    async def retry(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "retry"})
+        return "retry"
+
+    async def next_turn(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "next turn"})
+        return "next turn"
+
+    async def sibling_done(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "received stop notice"})
+        return "received stop notice"
+
+    lead = CancelAwareSession("lead", [suspend_on_child, retry, next_turn])
+    child = ScriptedSession("coder", [blocked_child])
+    sibling = CancelAwareSession("reviewer", [sibling_done])
+    scheduler, _ = build_scheduler(lead, [child])
+    sibling.state.aid = 2
+    sibling.scheduler = scheduler
+    scheduler.table.add(
+        SessionControlBlock(aid=2, parent_aid=0, agent=sibling.agent, state=sibling.state)
+    )
+    scheduler._sessions[2] = sibling
+
+    async def scenario():
+        cancel_event = asyncio.Event()
+        call = asyncio.create_task(scheduler.run("delegate", cancel_event=cancel_event))
+        await asyncio.wait_for(child_started.wait(), 0.5)
+        while lead.state.phase is not SessionPhase.AWAITING_EVENTS:
+            await asyncio.sleep(0)
+        await scheduler.send_message(2, 0, "reply", "accepted teammate content")
+        cancel_event.set()
+
+        with pytest.raises(SchedulerTurnError, match="interrupted by user"):
+            await asyncio.wait_for(call, 0.5)
+        release_child.set()
+
+        assert len(scheduler._message_inbox.get(0, [])) == 1
+        assert len(lead.state.pending_user_messages) == 1
+        assert lead.state.pending_user_messages[0]["message_content"] == "accepted teammate content"
+        assert any("team-notice" in message for message in sibling.added)
+        assert not scheduler._unanswered.get(0)
+        assert scheduler._quiescent()
+        assert await scheduler.run("new legitimate turn") == "next turn"
+        assert any("accepted teammate content" in message for message in lead.added)
+        assert lead.state.pending_user_messages == []
+
+    run(scenario())
+
+
+def test_cancel_event_during_restored_awaiting_preamble_settles_without_appending_user_turn():
+    child_started = asyncio.Event()
+    parent_started = asyncio.Event()
+    release_child = asyncio.Event()
+
+    class CancelAwareSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            step = self._steps.pop(0)
+            return await step(self, cancel_event)
+
+    async def resumed_old_turn(sess, _cancel_event):
+        sess.state.resume_to_idle()
+        sess.state.set_phase(SessionPhase.PRECHECK)
+        parent_started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    async def blocked_child(_sess):
+        child_started.set()
+        await release_child.wait()
+        return "late child result"
+
+    lead = CancelAwareSession("lead", [resumed_old_turn])
+    child = ScriptedSession("coder", [blocked_child])
+    scheduler, _ = build_scheduler(lead, [child])
+
+    async def scenario():
+        child_aid = await scheduler.spawn(0, "coder", "blocked child", tool_call_id="blocked-child")
+        lead.state.pending_events.add(
+            PendingRow("blocked-child", RowKind.CHILD_AGENT, 0, child_aid)
+        )
+        lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        await asyncio.wait_for(child_started.wait(), 0.5)
+        cancel_event = asyncio.Event()
+        call = asyncio.create_task(scheduler.run("must not append", cancel_event=cancel_event))
+        await asyncio.wait_for(parent_started.wait(), 0.5)
+        cancel_event.set()
+        with pytest.raises(SchedulerTurnError, match="interrupted by user"):
+            await asyncio.wait_for(call, 0.5)
+        assert "must not append" not in lead.added
+        assert lead.state.phase is SessionPhase.STOPPED
+        assert child.state.phase is SessionPhase.STOPPED
+        assert not scheduler._active_scheduler_tasks()
+        assert not scheduler._turn_lease
+        assert scheduler._quiescent()
+        release_child.set()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("terminal_phase", "terminal_reason"),
+    [
+        (SessionPhase.DONE, None),
+        (SessionPhase.ERROR, "sticky prior error"),
+    ],
+)
+def test_cancel_and_prior_terminal_completion_together_preserve_prior_outcome(
+    terminal_phase, terminal_reason, monkeypatch
+):
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+    lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    lead.state.messages.append({"role": "assistant", "content": "prior result"})
+    prior_result = "prior result" if terminal_phase is SessionPhase.DONE else "prior failure"
+    lead.result = prior_result
+    if terminal_phase is SessionPhase.ERROR:
+        lead.state.terminal_reason = terminal_reason
+
+    cancel_event = asyncio.Event()
+    terminal_gate = asyncio.Event()
+    terminal_wait_started = asyncio.Event()
+
+    async def gated_terminal_wait(_aid):
+        terminal_wait_started.set()
+        await terminal_gate.wait()
+
+    monkeypatch.setattr(scheduler, "_start_agent_task", lambda _aid, _session: None)
+    monkeypatch.setattr(scheduler, "wait_until_terminal", gated_terminal_wait)
+
+    async def scenario():
+        call = asyncio.create_task(
+            scheduler.run("incoming request", cancel_event=cancel_event)
+        )
+        await asyncio.wait_for(terminal_wait_started.wait(), 0.5)
+        lead.state.phase = terminal_phase
+        lead.state.terminal_reason = terminal_reason
+        scheduler._release_turn_lease(0)
+        cancel_event.set()
+        terminal_gate.set()
+
+        with pytest.raises(SchedulerTurnError) as error:
+            await asyncio.wait_for(call, 0.5)
+
+        assert error.value.phase is terminal_phase
+        assert lead.state.phase is terminal_phase
+        assert lead.state.terminal_reason == terminal_reason
+        assert lead.state.messages == [{"role": "assistant", "content": "prior result"}]
+        assert lead.result == prior_result
+        assert lead.added == []
+        assert not scheduler._active_scheduler_tasks()
+        assert not scheduler._turn_lease
+
+    run(scenario())

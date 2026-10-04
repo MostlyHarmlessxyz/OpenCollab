@@ -100,7 +100,7 @@ class SchedulerRunMixin:
             if task is None or task.done():
                 self._reserve_turn_lease(aid)
                 self._start_agent_task(aid, session)
-            await self.wait_until_terminal(aid)
+            await self._wait_for_prior_turn_or_cancel(aid)
 
         # A snapshot can capture the durable gap after an external user message
         # was accepted but before its driver task began. Finish that queued turn
@@ -109,16 +109,19 @@ class SchedulerRunMixin:
         if getattr(session.state, "pending_external_user_turn", None) is not None:
             self._reserve_turn_lease(aid)
             self._start_agent_task(aid, session)
-            await self.wait_until_terminal(aid)
+            await self._wait_for_prior_turn_or_cancel(aid)
 
         # Restored teammate messages are scheduler-owned turns. Deliver and
         # finish them before accepting the new external user turn.
         if self._message_inbox.get(aid):
-            await self._drain_message_inbox(aid)
-            await self.wait_until_terminal(aid)
+            await self._drain_message_inbox(aid, allow_stopped=True)
+            await self._wait_for_prior_turn_or_cancel(aid)
 
         if self._shutting_down:
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
+        cancel_event = self._turn_cancel_events.get(aid)
+        if cancel_event is not None and cancel_event.is_set():
+            await self._abort_prior_turn(aid)
         turn_start = len(session.state.messages)
         prior_lease = self._current_turn_lease(aid)
         if self._entry_agent_takes_the_pool(aid):
@@ -204,6 +207,49 @@ class SchedulerRunMixin:
             )
         return partial_answer
 
+    async def _wait_for_prior_turn_or_cancel(self, aid: int) -> None:
+        """Finish restored work, or settle it when this operation is cancelled."""
+        cancel_event = self._turn_cancel_events.get(aid)
+        if cancel_event is None:
+            await self.wait_until_terminal(aid)
+            return
+        if cancel_event.is_set():
+            await self._abort_prior_turn(aid)
+            return
+
+        terminal_waiter = asyncio.create_task(self.wait_until_terminal(aid))
+        cancel_waiter = asyncio.create_task(cancel_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {terminal_waiter, cancel_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if terminal_waiter in done:
+                await terminal_waiter
+                if cancel_event.is_set():
+                    await self._abort_prior_turn(aid)
+                return
+            if cancel_waiter in done:
+                terminal_waiter.cancel()
+                await asyncio.gather(terminal_waiter, return_exceptions=True)
+                await self._abort_prior_turn(aid)
+                return
+            await terminal_waiter
+        finally:
+            if not cancel_waiter.done():
+                cancel_waiter.cancel()
+            await asyncio.gather(cancel_waiter, return_exceptions=True)
+
+    async def _abort_prior_turn(self, aid: int) -> None:
+        """Do not append a new user turn after cancellation during the preamble."""
+        await self._settle_cancelled_suspended_turn(aid, allow_resumed=True)
+        scb = self.table.get(aid)
+        if scb is not None:
+            phase = scb.state.phase
+            reason = scb.state.terminal_reason or "interrupted by user"
+            raise SchedulerTurnError(aid, phase, reason, None)
+        raise SchedulerTurnError(aid, SessionPhase.STOPPED, "interrupted by user", None)
+
     def _turn_descendant_aids(self, aid: int) -> set[int]:
         """Return descendants referenced by this turn's live pending graph."""
         descendants: set[int] = set()
@@ -236,10 +282,19 @@ class SchedulerRunMixin:
                     changed = True
         return descendants
 
-    async def _settle_cancelled_suspended_turn(self, aid: int) -> None:
+    async def _settle_cancelled_suspended_turn(
+        self,
+        aid: int,
+        *,
+        allow_resumed: bool = False,
+    ) -> None:
         """Cancel one suspended turn subtree without shutting down the team."""
         target = self.table.get(aid)
-        if target is None or target.state.phase is not SessionPhase.AWAITING_EVENTS:
+        if target is None or (
+            allow_resumed and target.state.phase.is_terminal()
+        ):
+            return
+        if target.state.phase is not SessionPhase.AWAITING_EVENTS and not allow_resumed:
             return
 
         reason = "interrupted by user"
@@ -261,7 +316,7 @@ class SchedulerRunMixin:
 
         owned_tasks = {
             task
-            for child_aid in descendants
+            for child_aid in (*descendants, aid)
             for task in (
                 self._tasks.get(child_aid),
                 self._startup_tasks.get(child_aid),
@@ -309,6 +364,7 @@ class SchedulerRunMixin:
             self._turn_started_at.pop(child_aid, None)
             self._autosave_session(child_aid)
 
+        await self.notify_unanswered_senders(aid, reason)
         await self._safe_emit_scheduler_event(
             self._events.agent_cancelled(aid, target.agent.name)
         )
@@ -348,7 +404,10 @@ class SchedulerRunMixin:
         ):
             return False
         for scb in self.table.entries.values():
-            if self._message_inbox.get(scb.aid):
+            if (
+                self._message_inbox.get(scb.aid)
+                and scb.state.phase not in {SessionPhase.STOPPED, SessionPhase.ERROR}
+            ):
                 return False
             if not scb.state.pending_events.is_empty():
                 return False
