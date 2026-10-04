@@ -399,6 +399,15 @@ class EnvCandidateWorkspace:
             exclude_paths,
         )
 
+    async def source_revision(self) -> str:
+        return _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(await self._repository_root())} rev-parse --verify HEAD",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate source revision",
+        ).strip()
+
     async def restore_source(self, patch: str) -> None:
         await self._replace_source_diff(patch)
 
