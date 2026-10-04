@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from opencollab.adapters.tools._parameters import integer_parameter
+
 # A hunk header: @@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@ [heading]
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _BARE_HUNK_RE = re.compile(r"^@@[ \t]*(?:@@[ \t]*)?$")
@@ -107,8 +109,11 @@ def _apply_line_replace(
 
     if "start_line" not in params or "end_line" not in params:
         return None, "start_line and end_line are required for line_replace mode."
-    start_line = params["start_line"]
-    end_line = params["end_line"]
+    try:
+        start_line = integer_parameter(params["start_line"], "start_line")
+        end_line = integer_parameter(params["end_line"], "end_line")
+    except ValueError as exc:
+        return None, str(exc)
     new_str = params.get("new_str", "")
 
     lines, ended_nl = _split_lines(source)

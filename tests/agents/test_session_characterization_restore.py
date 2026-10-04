@@ -682,13 +682,24 @@ async def test_manual_save_after_default_restore_supersedes_old_journal(tmp_path
     )
     await original.add_user_message("first request")
     await original.run_loop()
+    # Keep this accepted turn as an uncompacted journal delta regardless of
+    # the terminal checkpoint's sequence allocation.
+    original._next_auto_save_checkpoint = original._auto_save_sequence + 2
     await original.add_user_message("queued request")
     await asyncio.gather(*original.pending_cleanup_tasks)
     journal = tmp_path / "manual-save.json.journal"
     assert journal.stat().st_size > 0
+    base = json.loads(path.read_text())
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["sequence"] > base["_autosave_sequence"]
+    assert records[0]["messages"][-1]["content"].startswith("queued request")
+    assert base["messages"][-1]["content"] == "first answer"
     resumed = load_session(str(path), agent=agent, llm=FakeLLMClient([llm_response("second answer")]))
+    assert resumed.messages[-1]["content"].startswith("queued request")
     assert await resumed.run_loop() == "second answer"
     resumed.save(str(path))
+    assert journal.read_bytes() == b""
     restored = load_session(str(path), agent=agent, llm=FakeLLMClient())
     assert restored.messages == resumed.messages
     assert restored.messages[-1]["content"] == "second answer"

@@ -170,7 +170,7 @@ def messages_to_input(
                 call_ids.add(call_id)
             items.extend(replay_items)
             continue
-        if role not in {"user", "assistant"}:
+        if role not in {"user", "assistant", "developer"}:
             raise ResponsesProtocolError(f"unsupported message role {role!r}")
         content = message_content_parts(message.get("content"))
         if content:

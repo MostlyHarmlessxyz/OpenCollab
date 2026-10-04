@@ -429,7 +429,7 @@ def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path
     )
 
     checkpoint = store.load_snapshot(str(target), session.agent.system_prompt)
-    assert checkpoint["_autosave_sequence"] == 2
+    assert checkpoint["_autosave_sequence"] == 3
     assert checkpoint["messages"][-1]["content"] == "resume me"
 
     async def append_and_flush():
@@ -445,7 +445,7 @@ def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path
         llm=_FakeLLM(),
         store=store,
     )
-    assert restored._auto_save_sequence == 3
+    assert restored._auto_save_sequence == 4
     assert restored.messages[-1]["content"] == "continue here"
 
 
@@ -459,7 +459,7 @@ def test_relative_save_alias_uses_autosave_checkpoint(tmp_path, monkeypatch):
     session.save("alias.json")
 
     saved = json.loads(target.read_text())
-    assert saved["_autosave_sequence"] == 4
+    assert saved["_autosave_sequence"] == 5
     assert (tmp_path / "alias.json.journal").read_bytes() == b""
 
 

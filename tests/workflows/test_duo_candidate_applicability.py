@@ -76,6 +76,12 @@ def _actions(case, command):
     if case == "unchanged-write":
         a.append(("file_write", {"path": "module.py", "mode": "create", "content": "VALUE = 2\n",
                                  "overwrite": True}))
+    if case in {"shell-stale", "shell-retested", "shell-read"}:
+        b = [_replace(0, 1), run]
+        command_after_test = "cat module.py" if case == "shell-read" else "printf 'VALUE = 3\\n' > module.py"
+        a.append(("bash", {"command": command_after_test}))
+        if case == "shell-retested":
+            a.extend([("bash", {"command": "printf 'VALUE = 2\\n' > module.py"}), run])
     return a, b
 
 
@@ -120,6 +126,9 @@ class _ScriptedModel:
     ("failed-edit", "A", True),
     ("noop-edit", "A", True),
     ("unchanged-write", "A", True),
+    ("shell-stale", "B", False),
+    ("shell-retested", "A", True),
+    ("shell-read", "A", False),
 ])
 async def test_duo_compares_execution_applicable_to_final_candidate(tmp_path, monkeypatch, case, winner, mechanical):
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
@@ -155,6 +164,13 @@ async def test_duo_compares_execution_applicable_to_final_candidate(tmp_path, mo
     b = output["candidates"]["B"]["public_test_records"]
     assert (a[0]["exit_code"], a[0]["verified"]) == (0, True)
     assert (b[0]["exit_code"], b[0]["verified"]) == (1, False)
+    if case in {"shell-stale", "shell-retested", "shell-read"}:
+        assert a[0]["applicability"] == "unknown"
+        assert a[0]["post_test_edits"] == []
+        assert a[0]["post_test_commands"]
+    if case == "shell-retested":
+        assert a[-1]["verified"] is True
+        assert a[-1]["applicability"] == "current"
     if case in {"stale", "patch-stale", "a-retested", "b-retested", "both-retested", "b-equivalent-retested", "notes"}:
         assert a[0]["applicability"] == "unknown"
         assert a[0]["post_test_edits"] == ["notes.md" if case == "notes" else "module.py"]
@@ -176,6 +192,13 @@ async def test_duo_compares_execution_applicable_to_final_candidate(tmp_path, mo
         for role, history in [("A", a), ("B", b)]:
             assert payload["inline_comparison"][role]["public_test_records"] == history
     completed = subprocess.run(command, shell=True, cwd=repo, capture_output=True, text=True)
+    if case == "shell-stale":
+        # Both final candidates fail. Their historical records cannot invent a
+        # passing final result, and the configured adjudicator selected B.
+        assert completed.returncode == 1
+        assert "1 failed" in completed.stdout
+        assert (repo / "module.py").read_text() == "VALUE = 1\n"
+        return
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "1 passed" in completed.stdout
     assert (repo / "module.py").read_text() == "VALUE = 2\n"

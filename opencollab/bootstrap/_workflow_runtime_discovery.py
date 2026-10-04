@@ -90,6 +90,7 @@ class _WorkflowImportFinder(importlib.abc.MetaPathFinder):
             )
             if spec is None:
                 raise ImportError(f"could not create import spec for workflow source: {candidate}")
+            spec.has_location = True
             if is_package:
                 spec.submodule_search_locations = []
             return spec
@@ -231,6 +232,7 @@ def discover_workflows(directory: str, *, include_builtin: bool = False) -> Regi
 
 def _load_workflow_specs(path: str) -> list[WorkflowSpec]:
     """Import one workflow file and bind its package to returned specs."""
+    path = os.path.abspath(path)
     source = read_regular_text(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
     package_name = f"_opencollab_workflow_{uuid.uuid4().hex}"
     module_name = f"{package_name}.workflow"
@@ -249,6 +251,7 @@ def _load_workflow_specs(path: str) -> list[WorkflowSpec]:
     )
     if module_spec is None:
         raise ImportError(f"could not create import spec for workflow source: {path}")
+    module_spec.has_location = True
     module = importlib.util.module_from_spec(module_spec)
 
     with _WORKFLOW_IMPORT_STATE_LOCK:

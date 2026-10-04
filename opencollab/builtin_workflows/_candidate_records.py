@@ -25,7 +25,7 @@ def _public_record(record: dict[str, Any]) -> dict[str, Any]:
         "exit_code": record.get("exit_code"),
         "verified": record.get("verified") is True,
     }
-    for field in ("applicability", "post_test_edits"):
+    for field in ("applicability", "post_test_edits", "post_test_commands"):
         if field in record:
             public[field] = copy.deepcopy(record[field])
     return public

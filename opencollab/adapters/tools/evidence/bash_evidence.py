@@ -26,6 +26,10 @@ class _ExecutionObserver:
 
     async def exec_cmd(self, command: str, timeout: float = 120.0) -> Any:
         spec = parse_test_command(command, getattr(self._environment, "workspace", None))
+        if spec is None or not spec.provable:
+            # Arbitrary shell execution can change files even when it fails or
+            # is interrupted. Its output cannot establish unchanged test inputs.
+            self._owner.record_unchecked_execution(command)
         if spec:
             self._owner.invalidate(spec.targets, spec.workspace)
         result = await self._environment.exec_cmd(command, timeout=timeout)
@@ -100,6 +104,15 @@ class BashEvidence:
             edits = record["post_test_edits"]
             assert isinstance(edits, list)
             edits.append(path)
+
+    def record_unchecked_execution(self, command: str) -> None:
+        """Keep historical results while recording uncertain shell effects."""
+        self._verified_targets.clear()
+        for record in self._verification_records:
+            record["applicability"] = "unknown"
+            commands = record.setdefault("post_test_commands", [])
+            assert isinstance(commands, list)
+            commands.append(command)
 
     def invalidate(self, targets: tuple[str, ...], workspace: str | None) -> None:
         stale = {

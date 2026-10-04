@@ -92,7 +92,7 @@ original changed paths and explain the inspected behavior. Model-written reports
 are claims to assess. Test records are comparable when their target, runner and
 command agree and their execution remains applicable to the final candidate.
 
-Native Bash execution creates a record with `applicability="current"`. A later
+Recognized test execution through Bash creates a record with `applicability="current"`. A later
 completed `file_write` or `apply_patch` operation with an observed content change
 marks earlier records `applicability="unknown"` and appends its path to
 `post_test_edits` in completion order. The original exit code and parser-backed
@@ -101,10 +101,17 @@ record alongside the earlier records. Failed edits and writes with unchanged
 contents preserve existing applicability. Custom `CandidateRun` providers whose
 records omit these optional fields retain their existing comparison behavior.
 
+A later Bash command outside the recognized executable test form also makes
+earlier applicability unknown and is retained in `post_test_commands`. Shell
+commands can change files even when they fail or are interrupted. The observer
+leaves those effects uncertain rather than inferring unchanged inputs from a
+command name or exit status. Native read-only tools keep existing applicability,
+and executing the test again provides a new current result.
+
 The mechanical public-test comparison uses current records. Earlier records
 with subsequent edits remain available to the existing adjudicator through both
 individual and shared evidence, inline or paged. The adjudicator assesses the
-final candidate and the recorded edits against the task requirements. This also
+final candidate and the recorded edits or shell commands against the task requirements. This also
 applies to an observed notes-file write, whose effect on test inputs remains
 uncertain from the write facts alone.
 

@@ -29,6 +29,7 @@ class CandidateRun:
     test_records: tuple[dict[str, Any], ...]
     verified_targets: tuple[str, ...]
     lifecycle_errors: tuple[str, ...] = ()
+    source_revision: str | None = None
 
 
 class CandidateCaptureError(RuntimeError):
@@ -180,6 +181,11 @@ def _verification_evidence(
 class WorkflowCandidatesMixin:
     """Runs agent sessions in candidate leases and adopts a selected diff."""
 
+    async def _candidate_source_state(self) -> tuple[str | None, str]:
+        read_revision = getattr(self._candidate_workspace, "source_revision", None)
+        revision = await read_revision() if callable(read_revision) else None
+        return revision, await self._candidate_workspace.source_diff()
+
     async def candidate_agent(
         self,
         prompt: str,
@@ -197,7 +203,7 @@ class WorkflowCandidatesMixin:
         selected_tools = list(tools or ())
 
         async def run() -> CandidateRun:
-            source_before = await self._candidate_workspace.source_diff()
+            source_before = await self._candidate_source_state()
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             token = None
@@ -245,7 +251,7 @@ class WorkflowCandidatesMixin:
                     )
                     failure.__cause__ = exc
                     raise failure
-                source_after = await self._candidate_workspace.source_diff()
+                source_after = await self._candidate_source_state()
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate {label}. "
@@ -260,6 +266,7 @@ class WorkflowCandidatesMixin:
                     diff=diff,
                     test_records=records,
                     verified_targets=targets,
+                    source_revision=source_before[0],
                 )
             except BaseException as exc:
                 failure = exc
@@ -318,7 +325,7 @@ class WorkflowCandidatesMixin:
             raise TypeError("candidate workflow args must be a dict")
 
         async def run() -> CandidateRun:
-            source_before = await self._candidate_workspace.source_diff()
+            source_before = await self._candidate_source_state()
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             child = None
@@ -347,6 +354,9 @@ class WorkflowCandidatesMixin:
                     deadline_margin_seconds=self._deadline_margin_seconds,
                     workspace_root=workspace if isinstance(workspace, str) else None,
                 )
+                # Candidate orchestration consumes no agent slot. Its sessions
+                # use the same capacity as every other agent in the run.
+                child._semaphore = self._semaphore
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
@@ -363,7 +373,7 @@ class WorkflowCandidatesMixin:
                     )
                     failure.__cause__ = exc
                     raise failure
-                source_after = await self._candidate_workspace.source_diff()
+                source_after = await self._candidate_source_state()
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate workflow {label}. "
@@ -377,6 +387,7 @@ class WorkflowCandidatesMixin:
                     diff=diff,
                     test_records=(),
                     verified_targets=(),
+                    source_revision=source_before[0],
                 )
             except BaseException as exc:
                 failure = exc
@@ -441,7 +452,7 @@ class WorkflowCandidatesMixin:
                 )
             return candidate
 
-        return await self._run_with_concurrency_permit(run)
+        return await run()
 
     async def adopt_candidate(
         self,
@@ -453,6 +464,15 @@ class WorkflowCandidatesMixin:
             raise RuntimeError("candidate workspaces are not available")
         if not isinstance(candidate, CandidateRun):
             raise TypeError("candidate must be a CandidateRun")
+        read_revision = getattr(self._candidate_workspace, "source_revision", None)
+        if (
+            candidate.source_revision is not None
+            and callable(read_revision)
+            and await read_revision() != candidate.source_revision
+        ):
+            raise CandidateWorkspaceTrackingError(
+                f"source worktree changed before candidate adoption {candidate.label}"
+            )
         adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
         if callable(adopt_run):
             # Full-environment backends must retain the chosen candidate's

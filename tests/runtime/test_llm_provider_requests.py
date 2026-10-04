@@ -444,7 +444,9 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     assert client.base_url == "http://proxy.local"
     assert captured["base_url"] == "http://proxy.local"
     assert captured["api_key"] == "k"
-    assert captured["timeout"] == 12.0
+    assert captured["timeout"].as_dict() == {
+        "connect": 30.0, "read": 12.0, "write": 12.0, "pool": 12.0,
+    }
     assert captured["max_retries"] == 0
 
 
