@@ -13,6 +13,7 @@ class ToolFacts:
     write_completed: bool | None = None
     content_changed: bool | None = None
     changed_paths: tuple[str, ...] = ()
+    submitted_summary: str | None = None
 
 
 class ToolFactsCollector:
@@ -53,6 +54,10 @@ class ToolFactsCollector:
     def record_timeout(self) -> None:
         if not self._closed:
             self._facts = replace(self._facts, observed=True, timed_out=True)
+
+    def record_submission(self, summary: str) -> None:
+        if not self._closed:
+            self._facts = replace(self._facts, submitted_summary=summary)
 
     def close(self) -> ToolFacts:
         self._closed = True

@@ -20,6 +20,7 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.tool_execution_runtime import ToolRuntime
 from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow_budget import _positive_concurrency
 from opencollab.application.workflow_registry import WorkflowSpec
 from opencollab.bootstrap._workflow_runtime_state import WORKFLOW_AGENT_PROMPT
 from opencollab.bootstrap.agent_profiles import SingleAgentProfile
@@ -145,6 +146,7 @@ class WorkflowSessionFactory:
         # between two agents means the same thing in either arm.
         self._worktree_pool: WorktreePool | None = None
         self._candidate_isolation_leases: list[tuple[Any, Any]] = []
+        self._owned_source_environment: LocalEnvironment | None = None
 
     @property
     def environment_revoked(self) -> bool:
@@ -225,6 +227,15 @@ class WorkflowSessionFactory:
                 await self._worktree_pool.release()
             except Exception as exc:
                 errors.append(exc)
+        # Keep the source usable until all candidate and isolated workspace
+        # owners have finished. Borrowed environments stay with their caller.
+        if environment is None and not errors and self._owned_source_environment is not None:
+            try:
+                await self._owned_source_environment.cleanup()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._owned_source_environment = None
         if errors:
             detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
             raise OSError(f"isolated environment cleanup failed: {detail}") from errors[0]
@@ -463,11 +474,17 @@ def build_workflow_context(
         in {"1", "true"}
         else budget if budget is not None else cfg.get("budget")
     )
+    # Validate the context's existing concurrency inputs before opening the
+    # source directory descriptor that the completed context will own.
+    max_concurrency = _positive_concurrency(max_concurrency, "max_concurrency")
+    if task_concurrency is not None:
+        task_concurrency = _positive_concurrency(task_concurrency, "task_concurrency")
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
     probe_env = environment
     if probe_env is None:
         probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
+        factory._owned_source_environment = probe_env
     candidate_root = getattr(probe_env, "workspace", None)
     tree_probe = (
         _CandidateSourceTreeProbe(candidate_workspace)

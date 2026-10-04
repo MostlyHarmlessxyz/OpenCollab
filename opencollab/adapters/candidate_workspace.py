@@ -14,8 +14,11 @@ from typing import Any
 
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
+from opencollab.adapters._env_process import ProcessCleanupError
+from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
 from opencollab.adapters.env import DockerWorkspaceEnvironment
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
@@ -111,7 +114,7 @@ async def _raw_diff_at(
         cached = " --cached"
     tracked = _complete(
         await environment.exec_cmd(
-            f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary --no-ext-diff"
+            f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary --no-ext-diff --no-textconv"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -125,27 +128,27 @@ async def _raw_diff_at(
         ),
         "candidate untracked listing",
     )
-    parts = [tracked.rstrip("\n")] if tracked.strip() else []
+    parts = [tracked] if tracked.strip() else []
     for path in (item for item in untracked.split("\0") if item):
         patch = _complete(
             await environment.exec_cmd(
                 "git -C "
                 f"{shlex.quote(workspace)} --no-pager diff --no-index --binary "
-                f"--no-ext-diff -- /dev/null {shlex.quote(path)}",
+                f"--no-ext-diff --no-textconv -- /dev/null {shlex.quote(path)}",
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
             f"candidate untracked diff for {path}",
             allowed=(0, 1),
         )
         if patch.strip():
-            parts.append(patch.rstrip("\n"))
-    return "\n".join(parts) + ("\n" if parts else "")
+            parts.append(patch)
+    return "".join(parts)
 
 
 @dataclass(slots=True)
 class _CandidateLease:
     base_environment: Any
-    environment: Any
+    environment: Any | None
     source_workspace: str
     candidate_workspace: str
     base_revision: str
@@ -208,16 +211,32 @@ class _CandidateLease:
             )
 
     async def cleanup(self) -> None:
+        await await_owned_operation(self._cleanup_resources(), propagate_cancellation=True)
+
+    async def _cleanup_resources(self) -> None:
         if self.cleaned:
             return
-        await self.environment.cleanup()
-        result = await self.base_environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(self.source_workspace)} worktree remove --force -- "
-            f"{shlex.quote(self.candidate_workspace)}",
-            timeout=120,
+        if self.environment is not None:
+            await self.environment.cleanup()
+        git = f"git -C {shlex.quote(self.source_workspace)}"
+        listed = _complete(
+            await self.base_environment.exec_cmd(f"{git} worktree list --porcelain -z", timeout=120),
+            "candidate worktree cleanup listing",
         )
-        _complete(result, "candidate worktree cleanup")
+        normalize = os.path.realpath if isinstance(self.base_environment, LocalEnvironment) else posixpath.normpath
+        registered = {
+            normalize(field.removeprefix("worktree "))
+            for field in listed.split("\0")
+            if field.startswith("worktree ")
+        }
+        if normalize(self.candidate_workspace) in registered:
+            command = f"{git} worktree remove --force -- {shlex.quote(self.candidate_workspace)}"
+        else:
+            command = f"rm -rf -- {shlex.quote(self.candidate_workspace)}"
+        _complete(
+            await self.base_environment.exec_cmd(command, timeout=120),
+            "candidate worktree cleanup",
+        )
         self.cleaned = True
 
 
@@ -263,23 +282,35 @@ class EnvCandidateWorkspace:
         source_patch = await _raw_diff_at(
             self._environment, self._workspace, base_revision=base_revision,
         )
-        result = await self._environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(self._workspace)} worktree add --detach -- "
-            f"{shlex.quote(path)} {shlex.quote(base_revision)}",
-            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-        )
-        _complete(result, f"candidate worktree setup for {label}")
-        environment = await self._candidate_environment(path)
-        await environment.setup()
         lease = _CandidateLease(
             base_environment=self._environment,
-            environment=environment,
+            environment=None,
             source_workspace=self._workspace,
             candidate_workspace=path,
             base_revision=base_revision,
         )
         try:
+            # Environment adapters terminate their command group before raising
+            # cancellation. Cleanup starts only after that command has settled.
+            result = await self._environment.exec_cmd(
+                "git -C "
+                f"{shlex.quote(self._workspace)} worktree add --detach -- "
+                f"{shlex.quote(path)} {shlex.quote(base_revision)}",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            )
+            _complete(result, f"candidate worktree setup for {label}")
+            lease.environment = await self._candidate_environment(path)
+            await lease.environment.setup()
+            if isinstance(self._environment, LocalEnvironment):
+                async def git_in(workspace: str, *arguments: str) -> Any:
+                    return await self._environment.exec_cmd(
+                        shlex.join(("git", "-C", workspace, *arguments)),
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    )
+
+                await _initialize_source_available_submodules(
+                    self._workspace, path, git_in=git_in, require_initialized=False,
+                )
             if source_patch.strip():
                 async with _candidate_temporary(
                     self._environment, self._workspace, source_patch,
@@ -313,8 +344,22 @@ class EnvCandidateWorkspace:
                 "candidate source recovery reference",
             )
             return lease
-        except BaseException:
-            await lease.cleanup()
+        except BaseException as failure:
+            if isinstance(failure, ProcessCleanupError) or getattr(self._environment, "revoked", False):
+                if lease.environment is not None:
+                    try:
+                        await await_owned_operation(lease.environment.cleanup())
+                    except BaseException as cleanup_error:
+                        add_exception_note(failure, f"candidate environment cleanup failed: {cleanup_error}")
+                add_exception_note(failure, f"candidate worktree retained until command cleanup completes: {path}")
+            else:
+                try:
+                    await await_owned_operation(lease.cleanup())
+                except BaseException as cleanup_error:
+                    add_exception_note(
+                        failure,
+                        f"candidate initialization cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
+                    )
             raise
 
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:

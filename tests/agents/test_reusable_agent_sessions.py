@@ -6,8 +6,10 @@ import asyncio
 
 import pytest
 
+from opencollab.adapters.tools.submit import SubmitTool
 from opencollab.bootstrap import build_session
-from tests.support.session_run_test_support import FakeLLM, agent_with_submit, llm_response
+from opencollab.domain.agent import Agent
+from tests.support.session_run_test_support import FakeLLM, agent_with_submit, llm_response, tool_call
 
 
 @pytest.mark.parametrize("create_second_before_first_turn", [False, True])
@@ -65,3 +67,52 @@ def test_separate_templates_keep_their_tool_configuration():
     asyncio.run(scenario())
     assert [tool.name for tool in first.agent.tools] == ["file_read", "submit_findings"]
     assert [tool.name for tool in second.agent.tools] == ["file_read", "submit_findings"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared, concurrent", [(True, True), (False, True), (True, False)])
+async def test_reused_submit_tool_keeps_each_sessions_accepted_answer(shared, concurrent):
+    template = Agent(name="lead", system_prompt="Finish the task.", tools=[SubmitTool()])
+    second_template = template if shared else Agent(
+        name="lead", system_prompt="Finish the task.", tools=[SubmitTool()],
+    )
+    sessions = [
+        build_session(
+            agent=agent,
+            llm=FakeLLM([llm_response(tool_calls=[tool_call(
+                name="submit", arguments='{"summary": "%s"}' % summary,
+            )])]),
+        )
+        for agent, summary in zip([template, second_template], ["first", "second"])
+    ]
+    for session, task in zip(sessions, ["first task", "second task"]):
+        await session.add_user_message(task)
+
+    if concurrent:
+        answers = await asyncio.gather(*(session.run_loop() for session in sessions))
+    else:
+        answers = [await session.run_loop() for session in sessions]
+
+    assert answers == ["first", "second"]
+    assert [session.messages[-1]["content"] for session in sessions] == answers
+    assert all(session.state.terminal_reason == "submitted" for session in sessions)
+    assert sessions[0].agent.tools[0] is template.tools[0]
+    assert sessions[1].agent.tools[0] is second_template.tools[0]
+
+
+@pytest.mark.asyncio
+async def test_invalid_concurrent_submit_keeps_the_other_sessions_accepted_answer():
+    template = Agent(name="lead", system_prompt="Finish the task.", tools=[SubmitTool()])
+    first = build_session(agent=template, llm=FakeLLM([llm_response(tool_calls=[
+        tool_call(name="submit", arguments='{"summary": "accepted"}'),
+    ])]))
+    second = build_session(agent=template, llm=FakeLLM([
+        llm_response(tool_calls=[tool_call(name="submit", arguments='{"summary": ""}')]),
+        llm_response(content="corrected answer"),
+    ]))
+    await first.add_user_message("first task")
+    await second.add_user_message("second task")
+
+    assert await asyncio.gather(first.run_loop(), second.run_loop()) == ["accepted", "corrected answer"]
+    assert first.state.terminal_reason == "submitted"
+    assert second.state.terminal_reason == "completed"

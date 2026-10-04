@@ -24,6 +24,7 @@ from opencollab.adapters.llm.types import (
     LLMResponse,
     Usage,
     rescue_empty_turn,
+    to_plain_data,
 )
 
 _ANTHROPIC_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
@@ -452,20 +453,20 @@ def _parse_usage(usage: Any) -> Usage:
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
     uncached_input = getattr(usage, "input_tokens", 0) or 0
-    output_details = getattr(usage, "output_tokens_details", None)
-    thinking_tokens = getattr(output_details, "thinking_tokens", 0) or 0
+    output_details = to_plain_data(getattr(usage, "output_tokens_details", None))
+    thinking_tokens = output_details.get("thinking_tokens") if isinstance(output_details, dict) else None
     return Usage(
         input_tokens=uncached_input + cache_read + cache_creation,
         output_tokens=getattr(usage, "output_tokens", 0) or 0,
         cache_read_tokens=cache_read,
         cache_creation_tokens=cache_creation,
-        reasoning_tokens=max(0, int(thinking_tokens)) or None,
+        reasoning_tokens=max(0, int(thinking_tokens)) if thinking_tokens is not None else None,
         raw_usage={
             "input_tokens": uncached_input,
             "output_tokens": getattr(usage, "output_tokens", 0) or 0,
             "cache_read_input_tokens": cache_read,
             "cache_creation_input_tokens": cache_creation,
-            "output_tokens_details": {"thinking_tokens": thinking_tokens},
+            "output_tokens_details": output_details,
         },
     )
 
@@ -574,8 +575,9 @@ def _convert_assistant_content(message: dict, *, message_index: int) -> list[dic
         provider_content = provider_state.get("anthropic_content")
         if isinstance(provider_content, list):
             return copy.deepcopy(provider_content)
+    content = message.get("content")
     content_blocks: list[dict] = _normalize_openai_content(
-        message.get("content", ""),
+        "" if content is None else content,
         message_index=message_index,
         role="assistant",
     )

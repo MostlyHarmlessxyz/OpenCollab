@@ -353,7 +353,7 @@ class Session:
                     )
 
     async def _checkpoint_terminal_snapshot(self) -> None:
-        if not self.state.phase.is_terminal():
+        if not self.state.phase.is_terminal() and self.state.phase is not SessionPhase.AWAITING_EVENTS:
             return
         owner = self.enqueue_auto_save()
         if owner is not None:
@@ -361,6 +361,10 @@ class Session:
                 owner,
                 propagate_cancellation=True,
             )
+        if self.state.phase is SessionPhase.AWAITING_EVENTS:
+            # The pending rows and their elapsed time are now complete. Persist
+            # this suspension without emitting the step_end reserved for resume.
+            return
         # Journal-backed autosave normally appends a delta. A terminal turn
         # must also publish a self-contained base snapshot: callers and crash
         # recovery may read the base file directly, without replaying its
@@ -597,6 +601,12 @@ class Session:
             if restored.phase is SessionPhase.AWAITING_EVENTS
             else None
         )
+        submitted_summary = raw_state.get("submitted_summary")
+        restored.submitted_summary = (
+            submitted_summary
+            if restored.phase is SessionPhase.AWAITING_EVENTS and isinstance(submitted_summary, str)
+            else None
+        )
         restored.terminal_reason = (
             str(raw_state["terminal_reason"])
             if restored.phase.is_terminal()
@@ -785,6 +795,7 @@ class Session:
                 ),
                 "active_turn_start_message_index": self.state.active_turn_start_message_index,
                 "pending_step_latency": self.state.pending_step_latency,
+                "submitted_summary": self.state.submitted_summary,
             },
         }
         if self.state.step_count != self._loop_checkpoint_step or self.state.phase in {
