@@ -125,10 +125,11 @@ class Session:
         self._llm_close_error: BaseException | None = None
         self._terminal_checkpoint_error: Exception | None = None
         self._auto_save_sequence = 0
+        self._auto_save_reserved_sequence = 0
         self._auto_save_message_count = 0
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_rewrite_revision = 0
-        self._auto_save_rewrite_lock = threading.Lock()
+        self._auto_save_lock = threading.Lock()
         self._auto_save_seen_result_hashes: set[str] = set()
         self._next_auto_save_checkpoint = 1
         self._loop_checkpoint_results: list[dict] = []
@@ -261,7 +262,7 @@ class Session:
     def messages(self, value: list[dict]) -> None:
         self.state.replace_messages(value)
         if hasattr(self, "_auto_save_rewrite_from"):
-            with self._auto_save_rewrite_lock:
+            with self._auto_save_lock:
                 self._auto_save_rewrite_from = 0
                 self._auto_save_rewrite_revision += 1
 
@@ -620,6 +621,7 @@ class Session:
     def _restore_auto_save_tracking(self, snapshot: dict[str, Any]) -> None:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         self._auto_save_sequence = sequence
+        self._auto_save_reserved_sequence = sequence
         stored_messages = snapshot.get("messages")
         self._auto_save_message_count = min(
             len(stored_messages) if isinstance(stored_messages, list) else 0,
@@ -740,23 +742,24 @@ class Session:
             )
 
     def save(self, path: str) -> None:
-        messages, meta = self._snapshot_for_save()
         if (
             _same_snapshot_path(path, self._auto_save_path)
             and isinstance(self.store, JournalSnapshotStorePort)
         ):
-            self.store.checkpoint_snapshot(
-                path,
-                messages,
-                meta=meta,
-                sequence=self._auto_save_sequence,
-            )
-            self._auto_save_message_count = len(self.state.messages)
-            self._auto_save_rewrite_from = None
-            self._auto_save_seen_result_hashes = set(
-                self.state.turn.seen_result_hashes
-            )
+            # Freeze and publish after every operation already submitted by
+            # this session. An older append may finish later, but replay will
+            # skip its sequence and its completion cannot rewind our cursor.
+            with self._auto_save_lock:
+                messages, meta = self._snapshot_for_save()
+                sequence = self._reserve_auto_save_sequence()
+                self.store.checkpoint_snapshot(path, messages, meta=meta, sequence=sequence)
+                self._auto_save_sequence = sequence
+                self._auto_save_message_count = len(messages)
+                self._auto_save_rewrite_from = None
+                self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
+                self._next_auto_save_checkpoint = 1 << sequence.bit_length()
             return
+        messages, meta = self._snapshot_for_save()
         self.store.save(path, messages, meta=meta)
 
     def _snapshot_for_save(self, message_start: int = 0) -> tuple[list[dict], dict]:
@@ -822,7 +825,17 @@ class Session:
             messages, meta = self._snapshot_for_save()
             return lambda: self.store.save(path, messages, meta=meta)
 
-        sequence = self._auto_save_sequence + 1
+        with self._auto_save_lock:
+            return self._prepare_journal_auto_save(path)
+
+    def _reserve_auto_save_sequence(self) -> int:
+        self._auto_save_reserved_sequence = max(
+            self._auto_save_reserved_sequence, self._auto_save_sequence,
+        ) + 1
+        return self._auto_save_reserved_sequence
+
+    def _prepare_journal_auto_save(self, path: str) -> Callable[[], None]:
+        sequence = self._reserve_auto_save_sequence()
         message_count = len(self.state.messages)
         replace_from = min(self._auto_save_message_count, message_count)
         if replace_from:
@@ -830,10 +843,9 @@ class Session:
             # user message, so retain one-message overlap without re-copying
             # the complete transcript.
             replace_from -= 1
-        with self._auto_save_rewrite_lock:
-            rewrite_revision = self._auto_save_rewrite_revision
-            if self._auto_save_rewrite_from is not None:
-                replace_from = min(replace_from, self._auto_save_rewrite_from)
+        rewrite_revision = self._auto_save_rewrite_revision
+        if self._auto_save_rewrite_from is not None:
+            replace_from = min(replace_from, self._auto_save_rewrite_from)
         messages, meta = self._snapshot_for_save(replace_from)
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = not self._auto_save_seen_result_hashes.issubset(
@@ -861,23 +873,25 @@ class Session:
                 seen_result_hashes_reset=seen_hashes_reset,
                 seen_result_hashes_added=seen_hashes_added,
             )
-            # The journal append is already fsync'd. Advance the absolute
-            # cursor before optional compaction so a failed base rewrite
-            # cannot cause the durable delta to be skipped on the next save.
-            self._auto_save_sequence = sequence
-            self._auto_save_message_count = message_count
-            with self._auto_save_rewrite_lock:
+            with self._auto_save_lock:
+                if sequence <= self._auto_save_sequence:
+                    return
+                # The journal append is already fsync'd. Advance the absolute
+                # cursor before optional compaction so a failed base rewrite
+                # cannot cause the durable delta to be skipped on the next save.
+                self._auto_save_sequence = sequence
+                self._auto_save_message_count = message_count
                 if self._auto_save_rewrite_revision == rewrite_revision:
                     self._auto_save_rewrite_from = None
-            self._auto_save_seen_result_hashes = current_seen_hashes
-            if checkpoint_messages is not None:
-                self.store.checkpoint_snapshot(
-                    path,
-                    checkpoint_messages,
-                    meta=meta,
-                    sequence=sequence,
-                )
-                self._next_auto_save_checkpoint *= 2
+                self._auto_save_seen_result_hashes = current_seen_hashes
+                if checkpoint_messages is not None:
+                    self.store.checkpoint_snapshot(
+                        path,
+                        checkpoint_messages,
+                        meta=meta,
+                        sequence=sequence,
+                    )
+                    self._next_auto_save_checkpoint = 1 << sequence.bit_length()
 
         return persist_incrementally
 
