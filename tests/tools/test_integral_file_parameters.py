@@ -9,6 +9,7 @@ from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.apply_patch_engine import _apply_line_replace
 from opencollab.adapters.tools.fs import FileReadTool
 from opencollab.application.schema_validate import validate
+from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
 from tests.support.session_run_loop_test_support import FakeLLM, llm_response, tool_call
@@ -71,3 +72,33 @@ def test_integral_ranges_keep_existing_bounds(params):
     updated, error = _apply_line_replace("alpha\n", {**params, "new_str": "new"})
     assert updated is None
     assert "must be" in error
+
+
+async def test_integral_read_range_works_with_read_file_only_backend():
+    class Environment:
+        workspace = "/unused"
+
+        async def read_file(self, path):
+            return "alpha\nbeta\ngamma\n"
+
+    result = await FileReadTool().execute_with_runtime(
+        {"path": "sample.txt", "offset": 2.0, "limit": 1.0},
+        ToolRuntime(environment=Environment(), safety_policy=None, permission_policy=None),
+    )
+    assert "2\tbeta" in result
+    assert "\talpha" not in result and "\tgamma" not in result
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, float("inf"), float("nan"), "1", None, 0, -1])
+@pytest.mark.parametrize("key", ["offset", "limit"])
+async def test_read_range_rejects_invalid_numbers(tmp_path, value, key):
+    environment = LocalEnvironment(str(tmp_path))
+    (tmp_path / "sample.txt").write_text("alpha\n")
+    try:
+        with pytest.raises(ValueError):
+            await FileReadTool().execute_with_runtime(
+                {"path": "sample.txt", key: value},
+                ToolRuntime(environment=environment, safety_policy=None, permission_policy=None),
+            )
+    finally:
+        await environment.cleanup()
