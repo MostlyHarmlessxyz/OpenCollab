@@ -73,6 +73,8 @@ class Session:
     This application-layer facade owns session lifecycle state access but not
     concrete collaborator construction. Callers must pass a pre-built
     ``SessionRuntime`` from the composition root.
+    A missing tracer inherits the runtime's recorder. Assigning ``None`` to
+    ``session.tracer`` after construction disables recording.
     """
 
     def __init__(
@@ -90,7 +92,7 @@ class Session:
     ):
         self.agent = agent
         self.env = env
-        self.tracer = tracer
+        self.tracer = tracer if tracer is not None else runtime.runner.tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
         self._permission_policy = permission_policy

@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
+from opencollab.application.session import Session as SessionFacade
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
+from opencollab.bootstrap.container import build_session_runtime
 from tests.support.session_characterization_test_support import (
     FakeAgent,
     FakeLLMClient,
@@ -155,3 +159,44 @@ def test_restoring_into_a_built_session_moves_its_records_to_the_restored_aid(tm
     run_records = [r for r in records if r["type"] != "session.history_compaction"]
     assert run_records
     assert {(r["aid"], r["role"]) for r in run_records} == {(7, "coder")}
+
+
+@pytest.mark.parametrize("tracer_argument", ["omitted", "none", "replacement"])
+def test_direct_runtime_session_preserves_tracing(tmp_path, tracer_argument) -> None:
+    original = Tracer("original", output_dir=str(tmp_path))
+    replacement = Tracer("replacement", output_dir=str(tmp_path))
+    agent = FakeAgent(tools=[FakeTool(name="known_tool")])
+    agent.name = "coder"
+    try:
+        runtime = build_session_runtime(
+            agent=agent, llm=_one_turn_llm(), tracer=original, event_sink=EventBus(None), aid=7,
+        )
+        kwargs = {} if tracer_argument == "omitted" else {
+            "tracer": replacement if tracer_argument == "replacement" else None,
+        }
+        session = SessionFacade(agent=agent, runtime=runtime, **kwargs)
+        selected = replacement if tracer_argument == "replacement" else original
+        initial_count = len(_records(selected))
+        assert run(session.run_loop()) == "recovered"
+        emitted = _records(selected)[initial_count:]
+        assert {"llm_call", "tool_error"} <= {record["type"] for record in emitted}
+        assert {(record["aid"], record["role"]) for record in emitted} == {(7, "coder")}
+        assert session.runner.tracer is session.tracer
+        assert session.tool_execution.tracer is session.tracer
+        if tracer_argument == "replacement":
+            assert len(_records(original)) == 1
+
+        snapshot = tmp_path / "session.json"
+        saved = Session(agent=agent, llm=_one_turn_llm(), aid=9)
+        saved.save(str(snapshot))
+        session.restore(str(snapshot))
+        session.agent.name = "reviewer"
+        session.tracer.log_step("after-restore", {})
+        assert (_records(selected)[-1]["aid"], _records(selected)[-1]["role"]) == (9, "reviewer")
+
+        session.tracer = None
+        assert session.runner.tracer is None
+        assert session.tool_execution.tracer is None
+    finally:
+        original.close()
+        replacement.close()
