@@ -58,7 +58,9 @@ def _extract_markup_tool_calls(
         return [], content
     start = content.index(_MARKUP_SECTION_BEGIN)
     section_start = start + len(_MARKUP_SECTION_BEGIN)
-    end_idx = content.index(_MARKUP_SECTION_END, section_start)
+    end_idx = content.find(_MARKUP_SECTION_END, section_start)
+    if end_idx < 0:
+        return [], content
     section = content[section_start:end_idx]
 
     tool_calls: list[dict[str, Any]] = []
