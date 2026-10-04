@@ -18,7 +18,7 @@ async def close_session_resources(
     *,
     timeout: float,
 ) -> bool:
-    """Close each unique session and prove every async close has terminated."""
+    """Close each unique session and report whether every close succeeded."""
     close_tasks: set[asyncio.Task[Any]] = set()
     succeeded = True
     seen: set[int] = set()
@@ -39,16 +39,16 @@ async def close_session_resources(
 
     if not close_tasks:
         return succeeded
-    done, pending = await asyncio.wait(close_tasks, timeout=timeout)
-    for task in done:
+    _done, pending = await asyncio.wait(close_tasks, timeout=timeout)
+    if pending:
+        pending = await cancel_tasks_and_wait(pending, timeout=timeout)
+    for task in close_tasks - pending:
         try:
             task.result()
         except BaseException:
             succeeded = False
-    if pending:
-        pending = await cancel_tasks_and_wait(pending, timeout=timeout)
-    for task in close_tasks - pending:
-        consume_task_result(task)
+    for task in pending:
+        task.add_done_callback(consume_task_result)
     return succeeded and not pending
 
 
