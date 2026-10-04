@@ -192,7 +192,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._provider_tasks: set[asyncio.Task[Any]] = set()
         self._llm_step_started = False
         self._draining_provider_tasks: set[asyncio.Task[Any]] = set()
-        # Successful responses that arrived only after their caller timeout.
+        # Successful responses returned after caller cancellation or timeout.
         # They count against the budget but never enter a later turn's history.
         self._late_provider_usage: tuple[int, ...] = ()
 
@@ -220,12 +220,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
         return tuple(
             set(task for task in self._provider_tasks if not task.done())
-            | self._draining_provider_tasks
+            | {task for task in self._draining_provider_tasks if not task.cancelled()}
         )
 
     @property
     def late_provider_usage(self) -> tuple[int, ...]:
-        """Immutable token ledger for successful, timed-out provider calls."""
+        """Immutable token ledger for successful, abandoned provider calls."""
         return self._late_provider_usage
 
     def _track_provider_task(self, task: asyncio.Task[Any]) -> None:
@@ -259,7 +259,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         *,
         protected_call: bool = False,
     ) -> None:
-        """Charge a provider response that survived cancellation after timeout."""
+        """Charge a provider response that survived caller cancellation or timeout."""
         try:
             response = task.result()
             _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
