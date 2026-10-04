@@ -271,7 +271,18 @@ def _build_request_kwargs(
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
     if thinking and top_p is not None:
-        raise ValueError("Anthropic thinking requires the provider-default top_p")
+        version = _anthropic_model_version(model)
+        manual_claude_4 = (
+            thinking_kwargs.get("thinking", {}).get("type") == "enabled"
+            and version is not None
+            and version[0] in {"opus", "sonnet", "haiku"}
+            and version[1] == 4
+            and not default_sampling_only
+        )
+        if not manual_claude_4:
+            raise ValueError("Anthropic thinking requires the provider-default top_p")
+        if isinstance(top_p, bool) or not 0.95 <= top_p <= 1.0:
+            raise ValueError("Anthropic manual thinking top_p must be between 0.95 and 1.0")
     if default_sampling_only and top_p is not None and top_p != 1.0:
         raise ValueError(
             f"Anthropic model {model!r} requires the provider-default top_p"
