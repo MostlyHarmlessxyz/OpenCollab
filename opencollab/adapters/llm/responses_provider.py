@@ -269,11 +269,30 @@ def _event_error_data(event: Any) -> Any:
     return error
 
 
-def _event_error(event: Any) -> str:
-    error = _event_error_data(event)
+def _error_message(error: Any) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or error.get("code") or error.get("reason") or "unknown Responses error")
     return str(error or "unknown Responses error")
+
+
+def _raise_response_error(error: Any) -> None:
+    message = _error_message(error)
+    code = error.get("code") if isinstance(error, dict) else None
+    param = error.get("param") if isinstance(error, dict) else None
+    if code in _TRANSIENT_RESPONSE_CODES or any(
+        fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
+    ):
+        status_code = 429 if code == "rate_limit_exceeded" else 503
+        raise ResponsesTransientEventError(message, code=code, status_code=status_code, param=param)
+    status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
+    raise ResponsesTerminalEventError(message, code=code, status_code=status_code, param=param)
+
+
+def _response_model(response: Any) -> str:
+    actual_model = getattr(response, "model", None)
+    if not isinstance(actual_model, str) or not actual_model:
+        raise ResponsesProtocolError("terminal Responses object is missing model identity")
+    return actual_model
 
 
 def _accept_output_item(event: Any, state: _StreamState) -> None:
@@ -325,39 +344,18 @@ def _validate_terminal_response(
         if reason not in {"max_tokens", "max_output_tokens"}:
             raise ResponsesProtocolError(f"incomplete Responses object has unsupported reason {reason!r}")
         finish_reason = "max_tokens"
-    actual_model = getattr(response, "model", None)
-    if not isinstance(actual_model, str) or not actual_model:
-        raise ResponsesProtocolError("terminal Responses object is missing model identity")
-    return actual_model, finish_reason
+    return _response_model(response), finish_reason
 
 
 
 def _handle_event(event: Any, state: _StreamState, expected_model: str | None = None) -> bool:
     event_type = _event_type(event)
     if event_type in {"error", "response.failed"}:
-        error = _event_error_data(event)
-        message = _event_error(event)
-        code = error.get("code") if isinstance(error, dict) else None
-        if code in _TRANSIENT_RESPONSE_CODES or any(
-            fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
-        ):
-            status_code = 429 if code == "rate_limit_exceeded" else 503
-            raise ResponsesTransientEventError(
-                message,
-                code=code,
-                status_code=status_code,
-            )
-        status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
-        raise ResponsesTerminalEventError(
-            message,
-            code=code,
-            status_code=status_code,
-            param=error.get("param") if isinstance(error, dict) else None,
-        )
+        _raise_response_error(_event_error_data(event))
     if event_type == "response.incomplete":
         response = getattr(event, "response", None)
         if getattr(response, "status", None) != "incomplete":
-            raise ResponsesTerminalEventError(_event_error(event))
+            raise ResponsesTerminalEventError(_error_message(_event_error_data(event)))
         state.completed_response = response
         _validate_terminal_response(response, expected_model)
         return True
@@ -591,7 +589,10 @@ def parse_responses_response(
     forced_text_tool: ForcedTextTool | None = None,
     tools: list[dict[str, Any]] | None = None,
 ) -> LLMResponse:
-    """Parse one completed non-streaming Responses object."""
+    """Parse one terminal non-streaming Responses object."""
+    if getattr(response, "status", None) == "failed":
+        _response_model(response)
+        _raise_response_error(to_plain_data(getattr(response, "error", None)))
     _validate_terminal_response(response, expected_model)
     state = _StreamState(completed_response=response)
     output = to_plain_data(getattr(response, "output", None))
