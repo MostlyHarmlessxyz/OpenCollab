@@ -574,8 +574,9 @@ def _convert_assistant_content(message: dict, *, message_index: int) -> list[dic
         provider_content = provider_state.get("anthropic_content")
         if isinstance(provider_content, list):
             return copy.deepcopy(provider_content)
+    content = message.get("content")
     content_blocks: list[dict] = _normalize_openai_content(
-        message.get("content", ""),
+        "" if content is None else content,
         message_index=message_index,
         role="assistant",
     )
