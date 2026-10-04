@@ -68,7 +68,7 @@ class LLMClient:
         wire_protocol: str = "chat_completions",
         max_retries: int = 3,
         request_timeout: float | None = 600.0,
-        connect_timeout: float = 30.0,
+        connect_timeout: float | None = 30.0,
         first_event_timeout: float | None = 180.0,
         stream_idle_timeout: float | None = 180.0,
         context_window: int | None = None,
@@ -120,6 +120,7 @@ class LLMClient:
         self._closed = False
 
         warn_provider_near_miss(provider)
+        provider_timeout = openai.Timeout(request_timeout, connect=connect_timeout)
         if is_anthropic(provider):
             if self.wire_protocol == RESPONSES:
                 raise ValueError("Responses wire protocol requires an OpenAI-compatible provider")
@@ -128,7 +129,7 @@ class LLMClient:
             self.base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
             anthropic_kwargs: dict[str, Any] = {
                 "api_key": api_key or os.environ.get("ANTHROPIC_API_KEY"),
-                "timeout": request_timeout,
+                "timeout": provider_timeout,
                 "max_retries": 0,
             }
             if self.base_url:
@@ -140,7 +141,7 @@ class LLMClient:
             openai_kwargs: dict[str, Any] = {
                 "api_key": api_key or os.environ.get("OPENAI_API_KEY"),
                 "base_url": self.base_url,
-                "timeout": openai.Timeout(request_timeout, connect=connect_timeout),
+                "timeout": provider_timeout,
                 "max_retries": 0,
             }
             resolved_user_agent = (
