@@ -241,6 +241,9 @@ class Scheduler(
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
+        # Targeted cancellation holds queued teammate messages until the next
+        # public run for that aid; ordinary terminal agents still wake to inboxes.
+        self._cancelled_turn_inbox_holds: set[int] = set()
         # recipient -> sender -> latest unanswered teammate message id
         self._unanswered: dict[int, dict[int, str]] = {}
         # The outer delivery task remains owned while ``add_user_message`` runs.

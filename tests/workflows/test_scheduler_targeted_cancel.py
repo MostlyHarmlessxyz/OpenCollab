@@ -290,6 +290,155 @@ def test_cancel_settlement_reconciles_queued_inbox_and_notifies_unanswered_sende
     run(scenario())
 
 
+def test_cancelled_descendant_keeps_inbox_until_its_next_public_turn():
+    child_started = asyncio.Event()
+    release_child = asyncio.Event()
+
+    class CancelAwareSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            step = self._steps.pop(0)
+            return await step(self, cancel_event)
+
+    async def suspend_on_child(sess, _cancel_event):
+        child_aid = await sess.scheduler.spawn(
+            sess.state.aid, "coder", "blocked child", tool_call_id="blocked-child"
+        )
+        sess.state.pending_events.add(
+            PendingRow("blocked-child", RowKind.CHILD_AGENT, 0, child_aid)
+        )
+        sess.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        return ""
+
+    async def blocked_child(_sess, _cancel_event):
+        child_started.set()
+        await release_child.wait()
+        return "late child result"
+
+    async def answer_queued_message(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "message delivered"})
+        return "message delivered"
+
+    async def answer_new_turn(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "child answer"})
+        return "child answer"
+
+    lead = CancelAwareSession("lead", [suspend_on_child])
+    child = CancelAwareSession(
+        "coder", [blocked_child, answer_queued_message, answer_new_turn]
+    )
+    sender = ScriptedSession("reviewer", [])
+    scheduler, _ = build_scheduler(lead, [child])
+    sender.state.aid = 2
+    sender.scheduler = scheduler
+    scheduler.table.add(
+        SessionControlBlock(aid=2, parent_aid=0, agent=sender.agent, state=sender.state)
+    )
+    scheduler._sessions[2] = sender
+
+    async def scenario():
+        cancel_event = asyncio.Event()
+        call = asyncio.create_task(scheduler.run("delegate", cancel_event=cancel_event))
+        await asyncio.wait_for(child_started.wait(), 0.5)
+        while lead.state.phase is not SessionPhase.AWAITING_EVENTS:
+            await asyncio.sleep(0)
+        await scheduler.send_message(2, 1, "late child work", "preserve child message")
+        cancel_event.set()
+        with pytest.raises(SchedulerTurnError, match="interrupted by user"):
+            await asyncio.wait_for(call, 0.5)
+
+        assert child.state.phase is SessionPhase.STOPPED
+        assert len(scheduler._message_inbox[1]) == 1
+        assert len(child.state.pending_user_messages) == 1
+        assert not scheduler._active_scheduler_tasks()
+        assert scheduler._quiescent()
+
+        assert await scheduler.run_turn(1, "new child turn") == "child answer"
+        assert len(child.added) == 2
+        assert sum("preserve child message" in message for message in child.added) == 1
+        assert child.state.pending_user_messages == []
+        assert scheduler._message_inbox.get(1, []) == []
+        release_child.set()
+
+    run(scenario())
+
+
+def test_restored_cancelled_inbox_survives_unrelated_run_then_delivers_once():
+    class AnsweringSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            step = self._steps.pop(0)
+            return await step(self, cancel_event)
+
+    async def answer_restored_message(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "handled restored message"})
+        return "handled restored message"
+
+    async def answer_new_turn(sess, _cancel_event):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "new lead answer"})
+        return "new lead answer"
+
+    async def answer_unrelated_run(sess):
+        sess.state.mark_done()
+        sess.state.append_message({"role": "assistant", "content": "unrelated answer"})
+        return "unrelated answer"
+
+    lead = AnsweringSession("lead", [answer_restored_message, answer_new_turn])
+    lead.state.cancel("interrupted by user")
+    lead.state.queue_pending_user_message(
+        {
+            "role": "user",
+            "content": (
+                '<teammate-message teammate_id="A1" summary="late" '
+                'message_id="restored-late-id">\nrestored teammate content\n'
+                "</teammate-message>"
+            ),
+            "message_content": "restored teammate content",
+            "from_aid": 1,
+            "to_aid": 0,
+            "from_role": "reviewer",
+            "to_role": "lead",
+            "summary": "late",
+            "message_id": "restored-late-id",
+            "delivery_status": "pending",
+            "timestamp": "restored-time",
+        }
+    )
+    scheduler, _ = build_scheduler(lead, [])
+    sender = ScriptedSession("reviewer", [answer_unrelated_run])
+    sender.state.aid = 1
+    sender.scheduler = scheduler
+    scheduler.table.add(
+        SessionControlBlock(aid=1, parent_aid=0, agent=sender.agent, state=sender.state)
+    )
+    scheduler._sessions[1] = sender
+
+    async def scenario():
+        assert scheduler._message_inbox[0]
+        assert 0 in scheduler._cancelled_turn_inbox_holds
+        assert await scheduler.run_turn(1, "unrelated run") == "unrelated answer"
+        assert len(scheduler._message_inbox[0]) == 1
+        assert scheduler._quiescent()
+
+        assert await scheduler.run_turn(0, "new lead turn") == "new lead answer"
+        assert sum("restored teammate content" in message for message in lead.added) == 1
+        assert lead.state.pending_user_messages == []
+        assert scheduler._message_inbox.get(0, []) == []
+        assert 0 not in scheduler._cancelled_turn_inbox_holds
+
+    run(scenario())
+
+
 def test_cancel_event_during_restored_awaiting_preamble_settles_without_appending_user_turn():
     child_started = asyncio.Event()
     parent_started = asyncio.Event()

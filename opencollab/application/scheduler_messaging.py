@@ -390,6 +390,12 @@ class MessagingMixin:
 
     def _restore_message_inbox(self, aid: int, state: object) -> None:
         """Rebuild scheduler-owned delivery records from a durable sidecar."""
+        if (
+            getattr(state, "phase", None) is SessionPhase.STOPPED
+            and getattr(state, "terminal_reason", None)
+            in {"interrupted by user", "parent turn interrupted by user"}
+        ):
+            self._cancelled_turn_inbox_holds.add(aid)
         pending = getattr(state, "pending_user_messages", None)
         if not isinstance(pending, list) or not pending:
             return
@@ -542,14 +548,12 @@ class MessagingMixin:
         aid: int,
         *,
         allow_current_task: bool = False,
-        allow_stopped: bool = False,
     ) -> None:
         lock = self._locks.setdefault(aid, asyncio.Lock())
         async with lock:
             events = await self._drain_message_inbox_locked(
                 aid,
                 allow_current_task=allow_current_task,
-                allow_stopped=allow_stopped,
             )
         for event in events:
             await self._safe_emit_scheduler_event(event)
@@ -572,7 +576,6 @@ class MessagingMixin:
         aid: int,
         *,
         allow_current_task: bool = False,
-        allow_stopped: bool = False,
     ) -> list[object]:
         inbox = self._message_inbox.get(aid)
         if not inbox:
@@ -622,7 +625,7 @@ class MessagingMixin:
             self._autosave_session(aid)
         if not inbox:
             return events
-        if scb.state.phase in {SessionPhase.STOPPED, SessionPhase.ERROR} and not allow_stopped:
+        if aid in self._cancelled_turn_inbox_holds:
             return events
         task = self._tasks.get(aid)
         current_task = asyncio.current_task()

@@ -111,10 +111,16 @@ class SchedulerRunMixin:
             self._start_agent_task(aid, session)
             await self._wait_for_prior_turn_or_cancel(aid)
 
+        cancel_event = self._turn_cancel_events.get(aid)
+        if aid in self._cancelled_turn_inbox_holds:
+            if cancel_event is not None and cancel_event.is_set():
+                await self._abort_prior_turn(aid)
+            self._cancelled_turn_inbox_holds.discard(aid)
+
         # Restored teammate messages are scheduler-owned turns. Deliver and
         # finish them before accepting the new external user turn.
         if self._message_inbox.get(aid):
-            await self._drain_message_inbox(aid, allow_stopped=True)
+            await self._drain_message_inbox(aid)
             await self._wait_for_prior_turn_or_cancel(aid)
 
         if self._shutting_down:
@@ -299,6 +305,7 @@ class SchedulerRunMixin:
 
         reason = "interrupted by user"
         failure = f"Error: {reason}"
+        self._cancelled_turn_inbox_holds.add(aid)
         descendants = self._turn_descendant_aids(aid)
         # Close every wake gate in the subtree before cancelling any producer.
         # A leaf cancellation is delivered to its immediate parent first; if
@@ -306,6 +313,7 @@ class SchedulerRunMixin:
         # intermediate suspended parent and create an untracked replacement
         # task while this finalizer awaited the original owners.
         for child_aid in descendants:
+            self._cancelled_turn_inbox_holds.add(child_aid)
             child = self.table.get(child_aid)
             if child is not None and not child.state.phase.is_terminal():
                 child.state.cancel("parent turn interrupted by user")
@@ -406,7 +414,7 @@ class SchedulerRunMixin:
         for scb in self.table.entries.values():
             if (
                 self._message_inbox.get(scb.aid)
-                and scb.state.phase not in {SessionPhase.STOPPED, SessionPhase.ERROR}
+                and scb.aid not in self._cancelled_turn_inbox_holds
             ):
                 return False
             if not scb.state.pending_events.is_empty():
