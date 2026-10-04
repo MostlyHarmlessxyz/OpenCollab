@@ -92,7 +92,7 @@ original changed paths and explain the inspected behavior. Model-written reports
 are claims to assess. Test records are comparable when their target, runner and
 command agree and their execution remains applicable to the final candidate.
 
-Native Bash execution creates a record with `applicability="current"`. A later
+Recognized test execution through Bash creates a record with `applicability="current"`. A later
 completed `file_write` or `apply_patch` operation with an observed content change
 marks earlier records `applicability="unknown"` and appends its path to
 `post_test_edits` in completion order. The original exit code and parser-backed
