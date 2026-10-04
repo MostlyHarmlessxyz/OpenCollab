@@ -64,6 +64,8 @@ Provider requests preserve developer message roles, connection timeouts,
 default output limits, and sampling options supported by the active reasoning
 configuration. Response handling retains refusals, tool calls paired with
 empty text, thinking usage, retryable failures, and output-limit termination.
+Each provider uses its SDK's native timeout type, including when the installed
+OpenAI and Anthropic SDKs expose different timeout implementations.
 An empty Anthropic end turn receives one bounded continuation. Trace ownership
 and structured failure details survive caller-supplied runtimes.
 
