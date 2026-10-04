@@ -43,9 +43,11 @@ class SchedulerRunMixin:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._active_run_tasks[current_task] = aid
+        owns_turn = False
         try:
             lock = self._run_locks.setdefault(aid, asyncio.Lock())
             async with lock:
+                owns_turn = True
                 if cancel_event is not None:
                     self._turn_cancel_events[aid] = cancel_event
                 try:
@@ -54,9 +56,9 @@ class SchedulerRunMixin:
                     if self._turn_cancel_events.get(aid) is cancel_event:
                         self._turn_cancel_events.pop(aid, None)
         except asyncio.CancelledError:
-            # The public caller owns the whole team turn. Do not leave its target
-            # driver and descendants running after that owner is cancelled.
-            if not self._shutting_down:
+            # Acquiring the run lock gives this caller ownership of the team
+            # turn. A cancelled waiter only withdraws its queued request.
+            if owns_turn and not self._shutting_down:
                 if current_task is not None:
                     if self._active_run_tasks.get(current_task) == aid:
                         self._active_run_tasks.pop(current_task, None)
