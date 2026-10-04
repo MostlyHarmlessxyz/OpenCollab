@@ -10,9 +10,11 @@ from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
 
 
-def configured_model_client(config: Mapping[str, Any]) -> LLMClient:
+def configured_model_client(
+    config: Mapping[str, Any], *, client_type: type[Any] | None = None,
+) -> Any:
     """Create an independently owned transport with the resolved configuration."""
-    return LLMClient(
+    return (client_type or LLMClient)(
         model=config["model"],
         provider=config["provider"],
         api_key=config.get("api_key"),
