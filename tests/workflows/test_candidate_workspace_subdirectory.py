@@ -31,7 +31,7 @@ async def test_subdirectory_candidate_inherits_edits_and_adopts_at_repository_ro
     try:
         lease = await workspace.acquire("package-edit")
         candidate_root = Path(lease.candidate_workspace)
-        assert Path(lease.environment.workspace) == candidate_root / prefix
+        assert Path(lease.environment.workspace) == (candidate_root / prefix).resolve()
         assert await lease.environment.read_file("source.py") == "value = 10\n"
         assert (candidate_root / prefix / "binary.bin").read_bytes() == b"source\x00\xff\n"
         assert (candidate_root / "source.py").read_text() == "value = 100\n"

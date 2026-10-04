@@ -249,6 +249,15 @@ class EnvCandidateWorkspace:
         if not isinstance(self._workspace, str) or not self._workspace:
             raise ValueError("candidate source workspace is unavailable")
 
+    async def _repository_root(self) -> str:
+        return _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(self._workspace)} rev-parse --show-toplevel",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate repository root",
+        ).strip()
+
     async def _candidate_environment(self, path: str) -> Any:
         if isinstance(self._environment, LocalEnvironment):
             return LocalEnvironment(path)
@@ -266,6 +275,14 @@ class EnvCandidateWorkspace:
         raise RuntimeError("candidate worktrees require a local or Docker environment")
 
     async def acquire(self, label: str) -> _CandidateLease:
+        repository_root = await self._repository_root()
+        workspace_prefix = _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(self._workspace)} rev-parse --show-prefix",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate workspace location",
+        ).rstrip("\n")
         token = uuid.uuid4().hex
         if isinstance(self._environment, LocalEnvironment):
             path = tempfile.mkdtemp(prefix="opencollab-candidate-")
@@ -274,18 +291,18 @@ class EnvCandidateWorkspace:
             path = f"/tmp/opencollab-candidate-{token}"
         base_revision = _complete(
             await self._environment.exec_cmd(
-                f"git -C {shlex.quote(self._workspace)} rev-parse --verify HEAD",
+                f"git -C {shlex.quote(repository_root)} rev-parse --verify HEAD",
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
             "candidate base revision",
         ).strip()
         source_patch = await _raw_diff_at(
-            self._environment, self._workspace, base_revision=base_revision,
+            self._environment, repository_root, base_revision=base_revision,
         )
         lease = _CandidateLease(
             base_environment=self._environment,
             environment=None,
-            source_workspace=self._workspace,
+            source_workspace=repository_root,
             candidate_workspace=path,
             base_revision=base_revision,
         )
@@ -294,12 +311,22 @@ class EnvCandidateWorkspace:
             # cancellation. Cleanup starts only after that command has settled.
             result = await self._environment.exec_cmd(
                 "git -C "
-                f"{shlex.quote(self._workspace)} worktree add --detach -- "
+                f"{shlex.quote(repository_root)} worktree add --detach -- "
                 f"{shlex.quote(path)} {shlex.quote(base_revision)}",
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             )
             _complete(result, f"candidate worktree setup for {label}")
-            lease.environment = await self._candidate_environment(path)
+            candidate_workspace = path
+            if workspace_prefix:
+                candidate_workspace = posixpath.join(path, _safe_path(workspace_prefix))
+                _complete(
+                    await self._environment.exec_cmd(
+                        f"mkdir -p -- {shlex.quote(candidate_workspace)}",
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    ),
+                    "candidate workspace directory",
+                )
+            lease.environment = await self._candidate_environment(candidate_workspace)
             await lease.environment.setup()
             if isinstance(self._environment, LocalEnvironment):
                 async def git_in(workspace: str, *arguments: str) -> Any:
@@ -309,11 +336,11 @@ class EnvCandidateWorkspace:
                     )
 
                 await _initialize_source_available_submodules(
-                    self._workspace, path, git_in=git_in, require_initialized=False,
+                    repository_root, path, git_in=git_in, require_initialized=False,
                 )
             if source_patch.strip():
                 async with _candidate_temporary(
-                    self._environment, self._workspace, source_patch,
+                    self._environment, repository_root, source_patch,
                     prefix=".candidate-source-", suffix=".patch",
                 ) as source_file:
                     _complete(
@@ -365,7 +392,7 @@ class EnvCandidateWorkspace:
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:
         return await _raw_diff_at(
             self._environment,
-            self._workspace,
+            await self._repository_root(),
             exclude_paths,
         )
 
@@ -373,7 +400,7 @@ class EnvCandidateWorkspace:
         await self._replace_source_diff(patch)
 
     async def _replace_source_diff(self, patch: str) -> None:
-        current = await _raw_diff_at(self._environment, self._workspace)
+        current = await self.source_diff()
         async with _candidate_temporary(
             self._environment, self._workspace, current,
             prefix=".candidate-current-", suffix=".patch", cleanup_best_effort=True,
@@ -408,18 +435,20 @@ class EnvCandidateWorkspace:
 
     async def _apply(self, path: str, operation: str, *, reverse: bool = False) -> None:
         reverse_flag = " --reverse" if reverse else ""
+        repository_root = await self._repository_root()
         result = await self._environment.exec_cmd(
             "git -C "
-            f"{shlex.quote(self._workspace)} apply --binary --whitespace=nowarn"
+            f"{shlex.quote(repository_root)} apply --binary --whitespace=nowarn"
             f"{reverse_flag} -- {shlex.quote(path)}",
             timeout=120,
         )
         _complete(result, operation)
 
     async def _patch_paths(self, path: str) -> set[str]:
+        repository_root = await self._repository_root()
         result = await self._environment.exec_cmd(
             "git -C "
-            f"{shlex.quote(self._workspace)} apply --numstat -z -- {shlex.quote(path)}",
+            f"{shlex.quote(repository_root)} apply --numstat -z -- {shlex.quote(path)}",
             timeout=30,
         )
         output = _complete(result, "candidate path inspection")
