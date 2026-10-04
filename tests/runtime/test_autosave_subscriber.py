@@ -368,11 +368,12 @@ def test_session_with_auto_save_path_writes_on_user_message(tmp_path):
 
 def test_autosave_retries_journal_record_after_fsync_error(tmp_path, monkeypatch):
     path = tmp_path / "fsync-retry.json"
+    store = SessionStore()
     session = Session(
         agent=FakeAgent(),
         llm=FakeLLMClient(),
         auto_save_path=str(path),
-        store=SessionStore(),
+        store=store,
     )
     real_fsync = __import__("os").fsync
     journal_path = tmp_path / "fsync-retry.json.journal"
@@ -401,7 +402,12 @@ def test_autosave_retries_journal_record_after_fsync_error(tmp_path, monkeypatch
         session._next_auto_save_checkpoint = 1
         await session.add_user_message("first message")
         await persist_current_state()
+        # The failed write leaves its reservation uncommitted and its bytes
+        # rolled back; there is no durable snapshot or journal record yet.
         assert session._auto_save_sequence == 0
+        assert store._read_journal_records(str(path)) == []
+        with pytest.raises(FileNotFoundError):
+            store.load_snapshot(str(path), session.agent.system_prompt)
 
         session.state.append_message(
             {"role": "user", "content": "second message"}
@@ -410,6 +416,16 @@ def test_autosave_retries_journal_record_after_fsync_error(tmp_path, monkeypatch
         await persist_current_state()
 
     asyncio.run(scenario())
+
+    before_restore = store.load_snapshot(str(path), "fallback")
+    # Reservation 1 belongs to the failed attempt. The changed-transcript
+    # retry reserves and durably checkpoints sequence 2 without a duplicate 1.
+    assert session._auto_save_sequence == 2
+    assert before_restore["_autosave_sequence"] == 2
+    assert [message["content"] for message in before_restore["messages"][-2:]] == [
+        "first message",
+        "second message",
+    ]
 
     restored = load_session(
         str(path),
@@ -420,7 +436,7 @@ def test_autosave_retries_journal_record_after_fsync_error(tmp_path, monkeypatch
         {"role": "user", "content": "first message"},
         {"role": "user", "content": "second message"},
     ]
-    assert restored._auto_save_sequence == 1
+    assert restored._auto_save_sequence == before_restore["_autosave_sequence"]
     assert session.persistence_errors == (injected_error,)
     assert journal_path.read_bytes() == b""
 
