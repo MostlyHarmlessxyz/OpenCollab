@@ -74,6 +74,8 @@ class Session:
     This application-layer facade owns session lifecycle state access but not
     concrete collaborator construction. Callers must pass a pre-built
     ``SessionRuntime`` from the composition root.
+    A missing tracer inherits the runtime's recorder. Assigning ``None`` to
+    ``session.tracer`` after construction disables recording.
     """
 
     def __init__(
@@ -91,7 +93,7 @@ class Session:
     ):
         self.agent = runtime.runner.agent
         self.env = env
-        self.tracer = tracer
+        self.tracer = tracer if tracer is not None else runtime.runner.tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
         self._permission_policy = permission_policy
@@ -113,6 +115,10 @@ class Session:
         self.tool_execution = runtime.tool_execution
         self.tool_execution.loop_reservation_checkpoint = self._checkpoint_loop_reservation
         self.runner = runtime.runner
+        # Set again now that the runner and the tool executor exist, so both
+        # write through this session's identity rather than the one the
+        # runtime was built with.
+        self.tracer = self._tracer
         self._auto_save_subscriber = runtime.auto_save_subscriber
         self._owns_llm = runtime.owns_llm
         self._llm_closed = False
@@ -150,11 +156,24 @@ class Session:
 
     @tracer.setter
     def tracer(self, value: TracePort | None) -> None:
+        # Bind any tracer that supports it to this session, read live: a
+        # snapshot restores ``state.aid`` after the tracer is set, and a
+        # caller may hand in a plain tracer at any point.
+        for_identity = getattr(value, "for_identity", None)
+        if callable(for_identity):
+            value = for_identity(self._trace_identity)
         self._tracer = value
         if hasattr(self, "tool_execution"):
             self.tool_execution.tracer = value
         if hasattr(self, "runner"):
             self.runner.tracer = value
+
+    def _trace_identity(self) -> tuple[int | None, Any]:
+        state = getattr(self, "state", None)
+        return (
+            getattr(state, "aid", None) if state is not None else None,
+            getattr(self.agent, "name", None),
+        )
 
     @property
     def max_budget_tokens(self) -> int | None:

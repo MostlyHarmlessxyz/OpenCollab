@@ -405,6 +405,16 @@ def _build_default_shaper(
     )
 
 
+def agent_trace_view(tracer: TracePort | None, aid: int, agent: Agent) -> TracePort | None:
+    """Bind ``tracer`` to one agent so every record it writes names that agent.
+
+    A tracer without ``for_agent`` (a test double, a caller's own recorder) is
+    returned unchanged.
+    """
+    for_agent = getattr(tracer, "for_agent", None)
+    return for_agent(aid, agent) if callable(for_agent) else tracer
+
+
 def build_skill_store(workspace: str | None) -> SkillStorePort:
     """Resolve the workspace's ``skills/`` directory into a skill store.
 
@@ -467,6 +477,7 @@ def build_session_runtime(
     agent.tools = list(getattr(agent, "tools", ()) or ())
     agent.tool_choice = copy.deepcopy(getattr(agent, "tool_choice", None))
     resolved_context = context_policy if context_policy is not None else ContextPolicy()
+    tracer = agent_trace_view(tracer, aid, agent)
     resolved_env = env if env is not None else LocalEnvironment()
     resolved_store: SessionStorePort = store if store is not None else SessionStore()
 
