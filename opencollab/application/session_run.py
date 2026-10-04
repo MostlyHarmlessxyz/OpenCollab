@@ -710,10 +710,14 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
                     add_note(f"cancellation trace failed: {type(observation_error).__name__}")
             raise
         except _TokenBudgetStop as exc:
+            output_shortfall = (
+                f"leaving less than {exc.minimum_output_tokens} output tokens required by model configuration"
+                if exc.minimum_output_tokens > 1 else "leaving no output headroom"
+            )
             reason = (
                 "budget exhausted before model call: conservative input reservation "
                 f"requires {exc.reserved_input_tokens} of {exc.remaining_budget} "
-                "remaining tokens, leaving no output headroom"
+                f"remaining tokens, {output_shortfall}"
             )
             await self._stop_precheck(reason)
             return

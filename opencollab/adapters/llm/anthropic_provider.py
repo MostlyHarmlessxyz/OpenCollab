@@ -202,6 +202,17 @@ def _validate_anthropic_output_format(value: Any) -> None:
         raise ValueError("Anthropic output_config.format must contain a JSON schema")
 
 
+def _minimum_output_tokens(
+    model: str, *, max_output_tokens: int, thinking: bool, thinking_params: dict | None,
+) -> int:
+    """Validate configured thinking before a session applies its budget cap."""
+    if not thinking:
+        return 1
+    request = _anthropic_thinking_kwargs(thinking_params, model=model, max_tokens=max_output_tokens)
+    config = request["thinking"]
+    return config["budget_tokens"] + 1 if config["type"] == "enabled" else 1
+
+
 def _merge_anthropic_reasoning_effort(
     request: dict[str, Any],
     reasoning_effort: str | None,
