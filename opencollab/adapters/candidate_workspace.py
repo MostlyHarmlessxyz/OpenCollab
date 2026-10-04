@@ -14,6 +14,7 @@ from typing import Any
 
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
+from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
 from opencollab.adapters.env import DockerWorkspaceEnvironment
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.patches import patch_paths
@@ -280,6 +281,16 @@ class EnvCandidateWorkspace:
             base_revision=base_revision,
         )
         try:
+            if isinstance(self._environment, LocalEnvironment):
+                async def git_in(workspace: str, *arguments: str) -> Any:
+                    return await self._environment.exec_cmd(
+                        shlex.join(("git", "-C", workspace, *arguments)),
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    )
+
+                await _initialize_source_available_submodules(
+                    self._workspace, path, git_in=git_in,
+                )
             if source_patch.strip():
                 async with _candidate_temporary(
                     self._environment, self._workspace, source_patch,
