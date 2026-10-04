@@ -13,7 +13,7 @@ from opencollab import OpenCollab
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.application.workflow import WorkflowContext
-from tests.support.workflow_context_test_support import FakeFactory, FakeSession
+from tests.support.workflow_context_test_support import CancelCleanupSession, FakeFactory, FakeSession
 
 
 @pytest.fixture
@@ -192,4 +192,57 @@ async def test_candidate_exit_returns_shared_agent_slot(repository, ending):
         await asyncio.gather(task, return_exceptions=True)
 
     assert await asyncio.wait_for(parent.agent("later agent"), timeout=5) == "later"
+    assert parent.pending_cleanup_tasks == ()
+
+
+async def test_candidate_and_nested_collection_complete_with_one_slot(repository):
+    parent = WorkflowContext(
+        FakeFactory([FakeSession(), FakeSession()]), max_concurrency=1,
+        candidate_workspace=EnvCandidateWorkspace(LocalEnvironment(str(repository))),
+    )
+
+    async def nested(child, _args):
+        return await child.parallel([lambda: child.agent("one"), lambda: child.agent("two")])
+
+    candidates = await asyncio.wait_for(parent.parallel([
+        lambda: parent.candidate_workflow(nested, {}, label="candidate"),
+    ]), timeout=5)
+
+    assert candidates[0].output == ["done", "done"]
+    assert parent.agent_failures == ()
+
+
+async def test_timed_out_child_holds_shared_slot_until_cleanup_finishes(repository):
+    slow = CancelCleanupSession()
+    later_entered = asyncio.Event()
+
+    async def enter_later():
+        later_entered.set()
+
+    later = FakeSession(reply="later", on_enter=enter_later)
+    parent = WorkflowContext(
+        FakeFactory([slow, later]), max_concurrency=1,
+        candidate_workspace=EnvCandidateWorkspace(LocalEnvironment(str(repository))),
+    )
+
+    async def nested(child, _args):
+        return await child.agent("slow", timeout=0.5)
+
+    candidate_task = asyncio.create_task(parent.candidate_workflow(nested, {}, label="candidate"))
+    later_task = None
+    try:
+        await asyncio.wait_for(slow.started.wait(), timeout=5)
+        await asyncio.wait_for(slow.cancel_seen.wait(), timeout=5)
+        later_task = asyncio.create_task(parent.agent("later"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not later_entered.is_set()
+        assert not candidate_task.done()
+    finally:
+        slow.release_cancel.set()
+        candidate = await asyncio.wait_for(candidate_task, timeout=5)
+        if later_task is not None:
+            assert await asyncio.wait_for(later_task, timeout=5) == "later"
+
+    assert candidate.output is None
     assert parent.pending_cleanup_tasks == ()
