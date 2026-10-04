@@ -13,6 +13,7 @@ from opencollab.adapters.tools.spawn import SpawnAgentTool
 from opencollab.adapters.tools.submit import SubmitTool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
+from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
@@ -214,3 +215,35 @@ def test_accepted_submission_resets_with_fresh_turn_and_rolls_back_with_failed_a
     assert state.submitted_summary is None
     state.restore_user_turn(checkpoint)
     assert state.submitted_summary == "accepted summary"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_waiting_submitted_turn_clears_the_durable_submission(tmp_path):
+    scheduler, factory, session, _model, _events, path = make_team(
+        tmp_path, extra_calls=[tool_call("submit", "submit", '{"summary":"accepted summary"}')],
+        extra_tools=[SubmitTool()],
+    )
+    cancel_event = asyncio.Event()
+    active = asyncio.create_task(scheduler.run("old user task", cancel_event=cancel_event))
+    try:
+        await wait_for_suspension(session)
+        assert session.state.submitted_summary == "accepted summary"
+        cancel_event.set()
+        with pytest.raises(SchedulerTurnError, match="interrupted by user"):
+            await asyncio.wait_for(active, 2)
+        await asyncio.gather(*session.pending_cleanup_tasks)
+
+        assert session.phase is SessionPhase.STOPPED
+        assert session.state.submitted_summary is None
+        assert session.state.pending_events.is_empty()
+        snapshot = SessionStore().load_snapshot(str(path), session.agent.system_prompt)
+        assert snapshot["session_state"]["submitted_summary"] is None
+
+        resumed_model = FakeLLMClient([llm_response(content="new task answer")])
+        restored = load_session(str(path), agent=agent(), llm=resumed_model, env=LocalEnvironment(str(tmp_path)))
+        await restored.add_user_message("new user task")
+        assert await restored.run_loop() == "new task answer"
+        assert restored.state.terminal_reason == "completed"
+        assert len(resumed_model.calls) == 1
+    finally:
+        await finish_team(scheduler, factory, active)
