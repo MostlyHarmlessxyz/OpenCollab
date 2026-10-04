@@ -69,8 +69,7 @@ async def test_cancelled_candidate_initialization_cleans_only_its_worktree(tmp_p
     try:
         await asyncio.wait_for(entered.wait(), 10)
         operation.cancel()
-        await asyncio.sleep(0)
-        command_release.set()
+        # Ordinary cancellable operations stop without an external release.
         await asyncio.wait_for(cleanup_entered.wait(), 10)
         operation.cancel()
         await asyncio.sleep(0)
@@ -134,6 +133,42 @@ async def test_failed_checkout_removes_partial_files_after_command_settles(tmp_p
             if path.exists():
                 (path / "partial.txt").unlink()
                 path.rmdir()
+        await base.cleanup()
+
+
+async def test_failed_source_command_closes_environment_and_retains_worktree(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    (repo / "source.py").write_text("value = 2\n")
+    base = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(base)
+    execute = base.exec_cmd
+    create_environment = workspace._candidate_environment
+    created = []
+    failure = ProcessCleanupError("source command did not stop")
+
+    async def recorded_environment(path):
+        environment = await create_environment(path)
+        created.append(environment)
+        return environment
+
+    async def unsettled_source_command(command, **kwargs):
+        if "apply" in shlex.split(command):
+            raise failure
+        return await execute(command, **kwargs)
+
+    monkeypatch.setattr(workspace, "_candidate_environment", recorded_environment)
+    monkeypatch.setattr(base, "exec_cmd", unsettled_source_command)
+    try:
+        with pytest.raises(ProcessCleanupError) as caught:
+            await workspace.acquire("unsettled-source-command")
+        assert caught.value is failure
+        assert created[0]._workspace_fd is None
+        assert Path(created[0].workspace).exists()
+        assert any("retained" in note for note in getattr(failure, "__notes__", ()))
+    finally:
+        for environment in created:
+            await LocalEnvironment.cleanup(environment)
+            _git(repo, "worktree", "remove", "--force", environment.workspace)
         await base.cleanup()
 
 

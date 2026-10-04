@@ -290,29 +290,22 @@ class EnvCandidateWorkspace:
             base_revision=base_revision,
         )
         try:
-            # Keep each bounded setup command alive until it settles. Cleanup
-            # can then remove this worktree after a caller cancellation without
-            # racing a command that is still creating its files.
-            result = await await_owned_operation(
-                self._environment.exec_cmd(
-                    "git -C "
-                    f"{shlex.quote(self._workspace)} worktree add --detach -- "
-                    f"{shlex.quote(path)} {shlex.quote(base_revision)}",
-                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                ),
-                propagate_cancellation=True,
+            # Environment adapters terminate their command group before raising
+            # cancellation. Cleanup starts only after that command has settled.
+            result = await self._environment.exec_cmd(
+                "git -C "
+                f"{shlex.quote(self._workspace)} worktree add --detach -- "
+                f"{shlex.quote(path)} {shlex.quote(base_revision)}",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             )
             _complete(result, f"candidate worktree setup for {label}")
             lease.environment = await self._candidate_environment(path)
             await lease.environment.setup()
             if isinstance(self._environment, LocalEnvironment):
                 async def git_in(workspace: str, *arguments: str) -> Any:
-                    return await await_owned_operation(
-                        self._environment.exec_cmd(
-                            shlex.join(("git", "-C", workspace, *arguments)),
-                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                        ),
-                        propagate_cancellation=True,
+                    return await self._environment.exec_cmd(
+                        shlex.join(("git", "-C", workspace, *arguments)),
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                     )
 
                 await _initialize_source_available_submodules(
@@ -324,44 +317,40 @@ class EnvCandidateWorkspace:
                     prefix=".candidate-source-", suffix=".patch",
                 ) as source_file:
                     _complete(
-                        await await_owned_operation(
-                            self._environment.exec_cmd(
-                                f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
-                                f"-- {shlex.quote(source_file)}",
-                                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                            ),
-                            propagate_cancellation=True,
+                        await self._environment.exec_cmd(
+                            f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
+                            f"-- {shlex.quote(source_file)}",
+                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                         ),
                         "candidate source contents",
                     )
                 # The candidate's index records its starting contents, including
                 # source untracked files, while the source index stays untouched.
                 lease.base_revision = _complete(
-                    await await_owned_operation(
-                        self._environment.exec_cmd(
-                            f"git -C {shlex.quote(path)} write-tree",
-                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                        ),
-                        propagate_cancellation=True,
+                    await self._environment.exec_cmd(
+                        f"git -C {shlex.quote(path)} write-tree",
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                     ),
                     "candidate source tree",
                 ).strip()
             # A worktree-local ref retains the original contents for recovery
             # throughout the lease, including after commits or Git collection.
             _complete(
-                await await_owned_operation(
-                    self._environment.exec_cmd(
-                        f"git -C {shlex.quote(path)} update-ref refs/worktree/opencollab-source "
-                        f"{shlex.quote(lease.base_revision)}",
-                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                    ),
-                    propagate_cancellation=True,
+                await self._environment.exec_cmd(
+                    f"git -C {shlex.quote(path)} update-ref refs/worktree/opencollab-source "
+                    f"{shlex.quote(lease.base_revision)}",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                 ),
                 "candidate source recovery reference",
             )
             return lease
         except BaseException as failure:
             if isinstance(failure, ProcessCleanupError) or getattr(self._environment, "revoked", False):
+                if lease.environment is not None:
+                    try:
+                        await await_owned_operation(lease.environment.cleanup())
+                    except BaseException as cleanup_error:
+                        add_exception_note(failure, f"candidate environment cleanup failed: {cleanup_error}")
                 add_exception_note(failure, f"candidate worktree retained until command cleanup completes: {path}")
             else:
                 try:
