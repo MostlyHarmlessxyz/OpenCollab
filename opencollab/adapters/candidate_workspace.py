@@ -259,7 +259,7 @@ class EnvCandidateWorkspace:
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
             "candidate repository root",
-        ).strip()
+        ).removesuffix("\n")
 
     async def _candidate_environment(self, path: str) -> Any:
         if isinstance(self._environment, LocalEnvironment):

@@ -12,6 +12,25 @@ from opencollab.application.workflow import WorkflowContext
 from tests.workflows.test_workflow_candidate_workspace import _Factory, _git, _repository
 
 
+async def test_candidate_repository_path_retains_trailing_spaces(tmp_path):
+    original = _repository(tmp_path)
+    repo = original.with_name("repo ")
+    original.rename(repo)
+    environment = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(environment)
+    lease = None
+    try:
+        lease = await workspace.acquire("space-suffixed-repository")
+        await lease.environment.write_file("source.py", "value = 2\n")
+        await workspace.adopt(await lease.diff())
+        assert (repo / "source.py").read_text() == "value = 2\n"
+    finally:
+        if lease is not None:
+            await lease.cleanup()
+        await environment.cleanup()
+    assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
 @pytest.mark.parametrize("prefix", ["package", "package/deep", "package with spaces"])
 @pytest.mark.parametrize("tracked", [False, True])
 async def test_subdirectory_candidate_inherits_edits_and_adopts_at_repository_root(tmp_path, prefix, tracked):
