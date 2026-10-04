@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
     SubmitFindingsTool,
@@ -44,7 +45,7 @@ class WorkflowAgentsMixin:
         timeout: float | None,
         budget: int | None,
         enforcement_strength: str,
-        commit_reserve: int,
+        commit_reserve: int | None,
         harvest_fallback: str | None = None,
     ) -> str | None:
         """Run a scout under the enforcement wind-down (STEP 0).
@@ -59,6 +60,10 @@ class WorkflowAgentsMixin:
         """
         deadline = self._timeout_deadline(timeout)
         session_budget = self._capped_session_budget(budget)
+        if commit_reserve is None:
+            commit_reserve = DEFAULT_COMMIT_RESERVE
+            if session_budget is not None and session_budget < commit_reserve:
+                commit_reserve = max(1, session_budget // 4)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
         combined_tools = [*(tools or []), submit_tool]
