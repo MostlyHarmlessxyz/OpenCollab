@@ -1,6 +1,7 @@
 """Observe native Bash execution for workflow evidence; preserve its API and output."""
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from opencollab.application.ports import ToolPort as Tool
@@ -43,6 +44,37 @@ class _ObservedRuntime:
         return getattr(self._runtime, name)
 
 
+class _WriteObservations:
+    def __init__(self, delegate: Any, owner: BashEvidence):
+        self._delegate = delegate
+        self._owner = owner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    def record_write(self, *, completed: bool, changed: bool | None, path: str | None = None) -> None:
+        if self._delegate is not None:
+            self._delegate.record_write(completed=completed, changed=changed, path=path)
+        if completed is True and changed is True:
+            self._owner.record_edit(path)
+
+
+class _ObservedEdit:
+    """Retain the native write facts and their order relative to test completion."""
+
+    def __init__(self, delegate: Tool, owner: BashEvidence):
+        self._delegate = delegate
+        self._owner = owner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
+        observed = _ObservedRuntime(runtime, self._owner)
+        observed.observations = _WriteObservations(getattr(runtime, "observations", None), self._owner)
+        return await self._delegate.execute_with_runtime(params, observed)
+
+
 class BashEvidence:
     """Delegate commands unchanged to OC's Bash and retain actual test results."""
 
@@ -56,6 +88,18 @@ class BashEvidence:
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         return await self._delegate.execute_with_runtime(params, _ObservedRuntime(runtime, self))
+
+    def observe_edits(self, delegate: Tool) -> Tool:
+        return _ObservedEdit(delegate, self)
+
+    def record_edit(self, path: str | None) -> None:
+        """Preserve the result while leaving post-edit applicability to adjudication."""
+        self._verified_targets.clear()
+        for record in self._verification_records:
+            record["applicability"] = "unknown"
+            edits = record["post_test_edits"]
+            assert isinstance(edits, list)
+            edits.append(path)
 
     def invalidate(self, targets: tuple[str, ...], workspace: str | None) -> None:
         stale = {
@@ -79,6 +123,7 @@ class BashEvidence:
             self._verification_records.append({
                 "target": target, "runner": spec.runner, "command": command, "workspace": spec.workspace,
                 "exit_code": result.returncode, "verified": verified,
+                "applicability": "current", "post_test_edits": [],
             })
             if verified:
                 self._verified_targets.add(target)
@@ -94,4 +139,4 @@ class BashEvidence:
 
     @property
     def verification_records(self) -> tuple[dict[str, object], ...]:
-        return tuple(dict(record) for record in self._verification_records)
+        return tuple(copy.deepcopy(record) for record in self._verification_records)

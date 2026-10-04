@@ -190,6 +190,46 @@ async def test_small_inline_comparison_retains_complete_diffs_and_shared_public_
         assert inline["report_is_model_supplied"] is True
 
 
+@pytest.mark.parametrize("paged", [False, True])
+async def test_adjudication_retains_post_test_edits_in_individual_and_shared_evidence(tmp_path, monkeypatch, paged):
+    if paged:
+        monkeypatch.setattr(new, "_INLINE_EVIDENCE_MAX_BYTES", 0)
+    history = {
+        "target": "test_public.py", "runner": "pytest", "command": "pytest test_public.py",
+        "exit_code": 0, "verified": True, "applicability": "unknown", "post_test_edits": ["src/handler.py"],
+    }
+    candidates = [
+        CandidateRun(label=label, output={"public_test_records": [history]}, diff=candidate(label, label).diff,
+                     test_records=(), verified_targets=())
+        for label in "AB"
+    ]
+    ctx = ReadingContext()
+    await new.adjudicate_candidate_files(ctx, goal="Preserve behavior", candidate_a=candidates[0],
+                                        candidate_b=candidates[1], selector_prompt="{candidates}",
+                                        evidence_parent=str(tmp_path))
+    prompt, options = ctx.selector_calls[0]
+    payload, _ = json.JSONDecoder().raw_decode(prompt)
+    expected_shared = contract._shared_public_records(*candidates)
+    if paged:
+        tool, = options["tools"]
+        for label in "AB":
+            page = json.loads(await tool.execute_with_runtime({"path": payload[label]["public_evidence_path"]}, None))
+            assert json.loads(page["content"])["public_test_records"] == [history]
+        page = json.loads(await tool.execute_with_runtime(
+            {"path": payload["shared_public_test_records_path"]}, None,
+        ))
+        assert json.loads(page["content"]) == expected_shared
+    else:
+        assert not options["tools"]
+        for label in "AB":
+            assert payload["inline_comparison"][label]["public_test_records"] == [history]
+        assert payload["inline_comparison"]["shared_public_test_records"] == expected_shared
+    for label in "AB":
+        assert expected_shared[0][label] == {
+            "exit_code": 0, "verified": True, "applicability": "unknown", "post_test_edits": ["src/handler.py"],
+        }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("large_field", ["candidate_report", "public_test_records"])
 async def test_inline_limit_includes_reports_and_individual_public_records(tmp_path, large_field):

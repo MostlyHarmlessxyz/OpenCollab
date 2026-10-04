@@ -10,8 +10,10 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.evidence.bash_evidence import BashEvidence
+from opencollab.adapters.tools.evidence.command_evidence import parse_test_command
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.domain.tool_facts import ToolFactsCollector
+from opencollab.tools import builtin_tools, evidence_tools
 from tests.support.tool_runtime_test_support import FakeRemoteEnv
 
 
@@ -188,3 +190,40 @@ async def test_noop_replacement_keeps_existing_rejection_and_known_no_write():
     facts = observations.close()
     assert output.startswith("Error:")
     assert facts.write_completed is False and facts.content_changed is False
+
+
+@pytest.mark.parametrize("name,params", [
+    ("file_write", {"path": "module.py", "mode": "str_replace", "old_str": "old", "new_str": "new"}),
+    ("apply_patch", {"path": "module.py", "mode": "line_replace", "start_line": 1, "end_line": 1,
+                     "new_str": "new\n"}),
+])
+async def test_native_edit_evidence_preserves_tool_api_facts_and_execution_history(name, params):
+    bash, edit = evidence_tools("bash", name, headless=False)
+    native, = builtin_tools(name, headless=False)
+    assert edit.to_openai_schema() == native.to_openai_schema()
+    command = "python -m pytest -rA test_module.py"
+    spec = parse_test_command(command, "/work")
+    passed = SimpleNamespace(returncode=0, stdout="PASSED test_module.py::test_case\n1 passed in 0.01s", stderr="")
+    bash.record(command, spec, passed)
+    env, reference = FakeRemoteEnv({"module.py": "old\n"}), FakeRemoteEnv({"module.py": "old\n"})
+    observed, native_facts = ToolFactsCollector(), ToolFactsCollector()
+    result = await edit.execute_with_runtime(params, runtime(env, observed))
+    expected = await native.execute_with_runtime(params, runtime(reference, native_facts))
+    assert result == expected
+    assert observed.close() == native_facts.close()
+    assert env.files == reference.files == {"module.py": "new\n"}
+    history, = bash.verification_records
+    assert (history["exit_code"], history["verified"]) == (0, True)
+    assert history["applicability"] == "unknown" and history["post_test_edits"] == ["module.py"]
+    assert not bash.verified_targets
+    history["post_test_edits"].append("caller.py")
+    assert bash.verification_records[0]["post_test_edits"] == ["module.py"]
+    bash.record(command, spec, passed)
+    latest = bash.verification_records[-1]
+    assert latest["applicability"] == "current" and latest["post_test_edits"] == []
+    assert bash.verified_targets == {"test_module.py", "test_module.py::test_case"}
+    await edit.execute_with_runtime({**params, **({"old_str": "new", "new_str": "next"} if name == "file_write"
+                                                else {"new_str": "next\n"})}, runtime(env, ToolFactsCollector()))
+    first, second = bash.verification_records
+    assert first["post_test_edits"] == ["module.py", "module.py"]
+    assert second["post_test_edits"] == ["module.py"]
