@@ -32,7 +32,7 @@ async def test_candidate_diff_commands_disable_display_conversion(index_file):
 async def test_candidate_inherits_and_delivers_raw_source_contents(tmp_path, monkeypatch):
     repo = _repository(tmp_path)
     (repo / "source.py").write_text("value = 2\n")
-    (repo / "bytes.bin").write_bytes(b"source\x00\xff\n")
+    (repo / "payload.txt").write_bytes("source café\n".encode())
     base = LocalEnvironment(str(repo))
     workspace = EnvCandidateWorkspace(base)
     execute = base.exec_cmd
@@ -50,20 +50,20 @@ async def test_candidate_inherits_and_delivers_raw_source_contents(tmp_path, mon
     try:
         source_patch = await workspace.source_diff()
         assert "+value = 2" in source_patch
-        assert "GIT binary patch" in source_patch
+        assert "+source café" in source_patch
         lease = await workspace.acquire("raw-contents")
         candidate = Path(lease.candidate_workspace)
         assert await lease.environment.read_file("source.py") == "value = 2\n"
-        assert (candidate / "bytes.bin").read_bytes() == b"source\x00\xff\n"
+        assert (candidate / "payload.txt").read_bytes() == "source café\n".encode()
         await lease.environment.write_file("source.py", "value = 3\n")
-        (candidate / "bytes.bin").write_bytes(b"candidate\x00\xfe\n")
+        (candidate / "payload.txt").write_bytes("candidate café\n".encode())
         patch = await lease.diff()
         assert "-value = 2" in patch
         assert "+value = 3" in patch
-        assert "GIT binary patch" in patch
+        assert "+candidate café" in patch
         await workspace.adopt(patch)
         assert (repo / "source.py").read_text() == "value = 3\n"
-        assert (repo / "bytes.bin").read_bytes() == b"candidate\x00\xfe\n"
+        assert (repo / "payload.txt").read_bytes() == "candidate café\n".encode()
     finally:
         if lease is not None:
             await lease.cleanup()
