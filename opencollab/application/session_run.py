@@ -820,15 +820,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             )
             return
 
-        # Empty-stop: a clean ``stop`` turn that produced neither text nor a tool
+        # Empty-stop: a natural completion that produced neither text nor a tool
         # call. Falling straight through to DONE would silently record a clean
         # completion that answered nothing. Retry once with a nudge before giving
         # up; the once-per-turn flag (plus the budget/step limits) bounds it. The
         # AUTOSAVING handler finishes the step and loops back to PRECHECK.
-        # ``finish_reason`` is gated to "stop": a "length" truncation will only
-        # truncate again, so a nudge cannot help there.
+        # Chat ``stop`` and native ``end_turn`` share this recovery. Other stop
+        # reasons retain their existing handling.
         empty_stop = not has_content and not response.tool_calls
-        if empty_stop and response.finish_reason in (None, "stop") and not self._empty_stop_retried:
+        if empty_stop and response.finish_reason in (None, "stop", "end_turn") and not self._empty_stop_retried:
             self._empty_stop_retried = True
             # Record the retry to the trajectory so empty-stops are measurable
             # (the injected nudge/placeholder messages are never persisted).
