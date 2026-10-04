@@ -81,9 +81,10 @@ def make_team(workspace, *, extra_calls=(), extra_tools=(), autosave=True):
 
 
 async def wait_for_suspension(session):
-    async with asyncio.timeout(2):
+    async def wait():
         while session.phase is not SessionPhase.AWAITING_EVENTS:
             await asyncio.sleep(0.001)
+    await asyncio.wait_for(wait(), 2)
     await asyncio.gather(*session.pending_cleanup_tasks)
 
 
