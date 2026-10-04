@@ -6,6 +6,7 @@ import asyncio
 
 import anthropic
 import httpx
+import openai
 import pytest
 
 from opencollab import OpenCollab
@@ -40,6 +41,33 @@ async def test_real_anthropic_requests_keep_all_timeout_components(monkeypatch, 
     assert requests == [{
         "connect": connect_timeout, "read": request_timeout, "write": request_timeout, "pool": request_timeout,
     }]
+
+
+async def test_anthropic_timeout_is_independent_of_the_openai_sdk_timeout_type(monkeypatch):
+    class OpenAITimeout:
+        """The OpenAI SDK may use a transport-specific timeout type."""
+
+        def __init__(self, timeout, *, connect):
+            self.timeout = timeout
+            self.connect = connect
+
+    monkeypatch.setattr(openai, "Timeout", OpenAITimeout)
+    requests = []
+
+    async def handler(request):
+        requests.append(request.extensions["timeout"])
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    async with LLMClient(
+        provider="anthropic", model="claude-sonnet-4-6",
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+        request_timeout=0.2, connect_timeout=0.02,
+    ) as client:
+        assert isinstance(client._anthropic.timeout, anthropic.Timeout)
+        assert (await client.complete([{"role": "user", "content": "Return ok"}])).content == "ok"
+    assert requests == [{"connect": 0.02, "read": 0.2, "write": 0.2, "pool": 0.2}]
 
 
 @pytest.mark.parametrize("connect_timeout,timed_out", [(0.02, True), (0.2, False)])

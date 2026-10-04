@@ -419,6 +419,8 @@ def test_anthropic_tool_choice_named_function_maps_to_named_tool():
 
 
 def test_llm_client_forwards_anthropic_base_url(monkeypatch):
+    from anthropic import Timeout
+
     captured = {}
 
     class FakeAsyncAnthropic:
@@ -428,7 +430,7 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "anthropic",
-        SimpleNamespace(AsyncAnthropic=FakeAsyncAnthropic),
+        SimpleNamespace(AsyncAnthropic=FakeAsyncAnthropic, Timeout=Timeout),
     )
 
     from opencollab.adapters.llm.client import LLMClient
