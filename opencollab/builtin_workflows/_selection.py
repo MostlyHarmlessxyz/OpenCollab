@@ -127,10 +127,14 @@ def _shared_public_records(
             "A": {
                 "exit_code": records_a[key].get("exit_code"),
                 "verified": records_a[key].get("verified") is True,
+                **{field: records_a[key][field] for field in ("applicability", "post_test_edits")
+                   if field in records_a[key]},
             },
             "B": {
                 "exit_code": records_b[key].get("exit_code"),
                 "verified": records_b[key].get("verified") is True,
+                **{field: records_b[key][field] for field in ("applicability", "post_test_edits")
+                   if field in records_b[key]},
             },
         }
         for key in sorted(records_a.keys() & records_b.keys())

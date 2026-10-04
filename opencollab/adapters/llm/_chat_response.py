@@ -58,7 +58,9 @@ def _extract_markup_tool_calls(
         return [], content
     start = content.index(_MARKUP_SECTION_BEGIN)
     section_start = start + len(_MARKUP_SECTION_BEGIN)
-    end_idx = content.index(_MARKUP_SECTION_END, section_start)
+    end_idx = content.find(_MARKUP_SECTION_END, section_start)
+    if end_idx < 0:
+        return [], content
     section = content[section_start:end_idx]
 
     tool_calls: list[dict[str, Any]] = []
@@ -123,6 +125,7 @@ def _build_chat_response(
     usage_message: Any,
     request_messages: list[dict],
     tools: list[dict] | None,
+    refusal: str | None = None,
 ) -> LLMResponse:
     """Turn already-extracted response fields into an ``LLMResponse``.
 
@@ -136,13 +139,15 @@ def _build_chat_response(
     assistant message (SDK object or plain dict) used to estimate output tokens
     when the endpoint reports none.
     """
+    use_refusal = not (content or "").strip() and isinstance(refusal, str) and bool(refusal.strip())
+
     # kimi (DashScope compat) sometimes emits tool calls as literal special-token
     # markup instead of structured ``tool_calls`` — in ``content`` or, under
     # thinking mode, inside ``reasoning_content`` (finish_reason='stop', empty
     # ``message.tool_calls``). Recover them so the tool actually runs instead of
     # being treated as a prose stop.
     markup_recovered = False
-    if not tool_calls:
+    if not tool_calls and not use_refusal:
         markup_calls, cleaned = _extract_markup_tool_calls(content)
         if markup_calls:
             tool_calls = markup_calls
@@ -154,6 +159,10 @@ def _build_chat_response(
                 tool_calls = markup_calls
                 reasoning = cleaned_reasoning
                 markup_recovered = True
+
+    # Refusal fallback is display text, including any quoted tool protocol markers.
+    if use_refusal:
+        content = refusal
 
     usage = _parse_usage(usage_source, request_messages, usage_message, tools)
     # Surface the P6 recovery as an observability counter (summed up the chain
@@ -202,6 +211,7 @@ def _parse_response(
         usage_message=message,
         request_messages=request_messages,
         tools=tools,
+        refusal=getattr(message, "refusal", None),
     )
 
 
@@ -266,8 +276,14 @@ def _usage_int(source: Any, key: str) -> int:
 
 
 def _estimate_output_tokens(message: Any) -> int:
-    """Estimate output tokens from all serialized assistant response fields."""
+    """Estimate visible reply text and the supported structured output fields."""
     plain_message = to_plain_data(message)
     if not isinstance(plain_message, dict):
         return 0
+    content, refusal = plain_message.get("content"), plain_message.get("refusal")
+    if (
+        (content is None or isinstance(content, str) and not content.strip())
+        and isinstance(refusal, str) and refusal.strip()
+    ):
+        plain_message = {**plain_message, "content": refusal}
     return estimate_messages_tokens([{"role": "assistant", **plain_message}])

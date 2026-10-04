@@ -119,6 +119,8 @@ def evidence_tools(
     Commands and formatted output follow the native Bash API. The Bash tool
     retains ``verification_records`` for every recognized target and
     ``verified_targets`` for targets with current passing execution evidence.
+    Completed native edits with observed content changes annotate earlier
+    records with uncertain applicability and their subsequent edit paths.
     The composition inherits workflow profile defaults and explicit ``limits``.
     """
     return observe_test_evidence(

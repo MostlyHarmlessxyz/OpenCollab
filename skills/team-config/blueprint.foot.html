@@ -102,6 +102,13 @@
   }
 
   /* ---------- validation (the blueprint doubles as a linter) ---------- */
+  function sameEditableIdentity(left, right) {
+    // Keep the page's common ASCII collision check narrow. The loader owns
+    // full Unicode identity validation; case-changing Unicode approximations
+    // can reject distinct valid names.
+    return left === right || (/^[\x00-\x7f]+$/.test(left) && /^[\x00-\x7f]+$/.test(right)
+      && left.toLowerCase() === right.toLowerCase());
+  }
   function reachable(t) {
     var seen = Object.create(null), q = [t.entry];
     seen[t.entry] = 1;
@@ -118,8 +125,12 @@
       issues.push({ level: "error", who: "entry", msg: "entry role '" + t.entryExplicit + "' is not declared in roles (" + JSON.stringify(names) + ")." });
     }
     if (!names.length) issues.push({ level: "warn", who: "roles", msg: "no roles declared — OpenCollab would fall back to a single default lead." });
-    names.forEach(function (n) {
+    names.forEach(function (n, index) {
       var r = t.roles[n];
+      var collision = names.slice(0, index).find(function (previous) { return sameEditableIdentity(previous, n); });
+      if (collision != null) {
+        issues.push({ level: "error", who: n, msg: "has the same role identity as '" + collision + "'. Choose a distinct name." });
+      }
       if (needsRoleBudgets && r.budget == null) {
         issues.push({ level: "error", who: n, msg: "has no token budget while other roles do. Set budget.tokens at the team level or on this role." });
       }
@@ -440,17 +451,24 @@
     if (!neu || neu === oldName) { render(); return; }
     // revert if the new name collides with a declared role OR an ad-hoc node
     // referenced in topology — merging onto either silently drops/merges edges.
+    var declared = team.roles;
+    function ownReference(name) {
+      return name === oldName || (!Object.prototype.hasOwnProperty.call(declared, name)
+        && sameEditableIdentity(name, oldName));
+    }
     var refd = Object.create(null);
     Object.keys(team.topology).forEach(function (s) { refd[s] = 1; (team.topology[s] || []).forEach(function (d) { refd[d] = 1; }); });
-    if (team.roles[neu] || refd[neu]) { render(); return; }
+    var declaredCollision = Object.keys(declared).some(function (name) { return name !== oldName && sameEditableIdentity(name, neu); });
+    var referencedCollision = Object.keys(refd).some(function (name) { return !ownReference(name) && sameEditableIdentity(name, neu); });
+    if (declaredCollision || referencedCollision) { render(); return; }
     var nr = Object.create(null); Object.keys(team.roles).forEach(function (k) { nr[k === oldName ? neu : k] = team.roles[k]; });
     team.roles = nr;
     var nt = Object.create(null); Object.keys(team.topology).forEach(function (s) {
-      nt[s === oldName ? neu : s] = (team.topology[s] || []).map(function (d) { return d === oldName ? neu : d; });
+      nt[ownReference(s) ? neu : s] = (team.topology[s] || []).map(function (d) { return ownReference(d) ? neu : d; });
     });
     team.topology = nt;
-    if (team.entry === oldName) team.entry = neu;
-    if (team.entryExplicit === oldName) team.entryExplicit = neu;
+    if (ownReference(team.entry)) team.entry = neu;
+    if (team.entryExplicit != null && ownReference(team.entryExplicit)) team.entryExplicit = neu;
     render();
   }
 
@@ -465,7 +483,8 @@
     }
     if (act === "edit") { editMode = !editMode; render(); return; }
     if (act === "add-role") {
-      var base = "role", n = base, i = 2; while (team.roles[n]) n = base + i++;
+      var base = "role", n = base, i = 2;
+      while (Object.keys(team.roles).some(function (name) { return sameEditableIdentity(name, n); })) n = base + i++;
       team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, profile: null, budget: null, tools: [] };
       render(); return;
     }

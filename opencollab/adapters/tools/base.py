@@ -44,9 +44,14 @@ def _host_lock_path(path: str, env: Any) -> str:
 
 @contextlib.asynccontextmanager
 async def host_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
-    """Acquire a cross-process host lock without blocking the asyncio loop."""
+    """Hold the environment's file lock across the complete native edit."""
     if env is not None and not getattr(env, "local_filesystem", False):
-        yield None
+        environment_lock = getattr(env, "file_write_lock", None)
+        if callable(environment_lock):
+            async with environment_lock(path) as target:
+                yield target
+        else:
+            yield None
         return
 
     lock = FileLock(_host_lock_path(path, env), timeout=0)
