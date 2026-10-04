@@ -10,6 +10,7 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
+from opencollab.adapters.llm.errors import StreamedUsageUnavailableError
 
 _REFUSAL = "I cannot provide that response. I can explain the general principles."
 _ANSWER = "Here are the general principles."
@@ -23,7 +24,7 @@ _TOOL_MARKUP = (
 )
 
 
-def _reply(stream, content, refusal, finish_reason, *, reasoning=None, tool_calls=None):
+def _reply(stream, content, refusal, finish_reason, *, reasoning=None, tool_calls=None, usage=_USAGE):
     common = {"id": "chatcmpl-refusal", "created": 1, "model": "gpt-4o"}
     if not stream:
         message = {"role": "assistant", "content": content, "refusal": refusal}
@@ -34,7 +35,7 @@ def _reply(stream, content, refusal, finish_reason, *, reasoning=None, tool_call
         return httpx.Response(200, json={
             **common,
             "object": "chat.completion",
-            "usage": _USAGE,
+            **({"usage": usage} if usage is not None else {}),
             "choices": [{
                 "index": 0,
                 "message": message,
@@ -55,7 +56,7 @@ def _reply(stream, content, refusal, finish_reason, *, reasoning=None, tool_call
     ]
     frames.extend([
         {**common, "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]},
-        {**common, "choices": [], "usage": _USAGE},
+        {**common, "choices": [], "usage": usage},
     ])
     body = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames) + "data: [DONE]\n\n"
     return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=body.encode())
@@ -165,3 +166,56 @@ async def test_refusal_stays_text_while_explicit_content_and_structured_calls_ke
     assert response.usage.markup_recovered == recovered
     assert response.usage.total_tokens == 20
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize(("stream", "usage"), [
+    (False, None),
+    (False, {"prompt_tokens": 13, "completion_tokens": 0, "total_tokens": 13}),
+])
+@pytest.mark.parametrize("extras", [
+    {}, {"reasoning": "Consider the permitted alternative."}, {"tool_calls": [_TOOL_CALL]},
+])
+async def test_refusal_output_estimate_matches_the_same_visible_content(stream, usage, extras):
+    async def parsed(content, refusal):
+        async def handler(_request):
+            return _reply(stream, content, refusal, "stop", usage=usage, **extras)
+
+        client = await _client(stream, handler)
+        try:
+            return await client.complete([{"role": "user", "content": "Explain the available alternative."}])
+        finally:
+            await client.close()
+
+    ordinary = await parsed(_REFUSAL, None)
+    refused = await parsed(None, _REFUSAL)
+    mixed = await parsed(_REFUSAL, "A separate refusal field.")
+
+    assert ordinary.content == refused.content == mixed.content == _REFUSAL
+    assert ordinary.usage.estimated and refused.usage.estimated and mixed.usage.estimated
+    assert refused.usage.input_tokens == ordinary.usage.input_tokens == mixed.usage.input_tokens
+    assert refused.usage.output_tokens == ordinary.usage.output_tokens == mixed.usage.output_tokens
+    assert refused.usage.output_tokens > 10
+
+
+@pytest.mark.parametrize("usage", [None, {"prompt_tokens": 13, "completion_tokens": 0, "total_tokens": 13}])
+async def test_streamed_refusal_still_requires_reported_usage(usage):
+    async def handler(_request):
+        return _reply(True, None, _REFUSAL, "stop", usage=usage)
+
+    client = await _client(True, handler)
+    try:
+        with pytest.raises(StreamedUsageUnavailableError):
+            await client.complete([{"role": "user", "content": "Explain the available alternative."}])
+    finally:
+        await client.close()
+
+
+async def test_estimation_preserves_the_original_refusal_payload():
+    from opencollab.adapters.llm._chat_response import _estimate_output_tokens
+
+    message = {"role": "assistant", "content": None, "refusal": _REFUSAL}
+    original = dict(message)
+    expected = _estimate_output_tokens({"role": "assistant", "content": _REFUSAL})
+
+    assert _estimate_output_tokens(message) == expected
+    assert message == original

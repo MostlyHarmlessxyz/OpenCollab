@@ -276,8 +276,14 @@ def _usage_int(source: Any, key: str) -> int:
 
 
 def _estimate_output_tokens(message: Any) -> int:
-    """Estimate output tokens from all serialized assistant response fields."""
+    """Estimate visible reply text and the supported structured output fields."""
     plain_message = to_plain_data(message)
     if not isinstance(plain_message, dict):
         return 0
+    content, refusal = plain_message.get("content"), plain_message.get("refusal")
+    if (
+        (content is None or isinstance(content, str) and not content.strip())
+        and isinstance(refusal, str) and refusal.strip()
+    ):
+        plain_message = {**plain_message, "content": refusal}
     return estimate_messages_tokens([{"role": "assistant", **plain_message}])
