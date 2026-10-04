@@ -347,6 +347,9 @@ class WorkflowCandidatesMixin:
                     deadline_margin_seconds=self._deadline_margin_seconds,
                     workspace_root=workspace if isinstance(workspace, str) else None,
                 )
+                # Candidate orchestration consumes no agent slot. Its sessions
+                # use the same capacity as every other agent in the run.
+                child._semaphore = self._semaphore
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
@@ -441,7 +444,7 @@ class WorkflowCandidatesMixin:
                 )
             return candidate
 
-        return await self._run_with_concurrency_permit(run)
+        return await run()
 
     async def adopt_candidate(
         self,
