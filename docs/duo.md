@@ -90,7 +90,23 @@ result. A function's presence or a matching symbol alone leaves that path
 unresolved. Each requirement's `a_evidence` and `b_evidence` entries name the
 original changed paths and explain the inspected behavior. Model-written reports
 are claims to assess. Test records are comparable when their target, runner and
-command agree.
+command agree and their execution remains applicable to the final candidate.
+
+Native Bash execution creates a record with `applicability="current"`. A later
+completed `file_write` or `apply_patch` operation with an observed content change
+marks earlier records `applicability="unknown"` and appends its path to
+`post_test_edits` in completion order. The original exit code and parser-backed
+`verified` result remain in the history. A new test execution creates a current
+record alongside the earlier records. Failed edits and writes with unchanged
+contents preserve existing applicability. Custom `CandidateRun` providers whose
+records omit these optional fields retain their existing comparison behavior.
+
+The mechanical public-test comparison uses current records. Earlier records
+with subsequent edits remain available to the existing adjudicator through both
+individual and shared evidence, inline or paged. The adjudicator assesses the
+final candidate and the recorded edits against the task requirements. This also
+applies to an observed notes-file write, whose effect on test inputs remains
+uncertain from the write facts alone.
 
 Correctness and compatibility determine the comparison. Architectural ambition,
 longer reports, more changes and more files confer no preference. A covered
