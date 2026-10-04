@@ -139,8 +139,7 @@ def _build_chat_response(
     assistant message (SDK object or plain dict) used to estimate output tokens
     when the endpoint reports none.
     """
-    if not (content or "").strip() and isinstance(refusal, str) and refusal.strip():
-        content = refusal
+    use_refusal = not (content or "").strip() and isinstance(refusal, str) and bool(refusal.strip())
 
     # kimi (DashScope compat) sometimes emits tool calls as literal special-token
     # markup instead of structured ``tool_calls`` — in ``content`` or, under
@@ -148,7 +147,7 @@ def _build_chat_response(
     # ``message.tool_calls``). Recover them so the tool actually runs instead of
     # being treated as a prose stop.
     markup_recovered = False
-    if not tool_calls:
+    if not tool_calls and not use_refusal:
         markup_calls, cleaned = _extract_markup_tool_calls(content)
         if markup_calls:
             tool_calls = markup_calls
@@ -160,6 +159,10 @@ def _build_chat_response(
                 tool_calls = markup_calls
                 reasoning = cleaned_reasoning
                 markup_recovered = True
+
+    # Refusal fallback is display text, including any quoted tool protocol markers.
+    if use_refusal:
+        content = refusal
 
     usage = _parse_usage(usage_source, request_messages, usage_message, tools)
     # Surface the P6 recovery as an observability counter (summed up the chain
