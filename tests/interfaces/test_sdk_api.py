@@ -65,6 +65,9 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "system_prompt",
             "llm",
             "profile",
+            # The id written to every file the run leaves; a harness passes its
+            # own so its records join the run's. ``team`` and ``workflow`` too.
+            "run_id",
         ),
         sdk.OpenCollab.agent2: ("self", "prompt", "kwargs"),
         sdk.OpenCollab.team: (
@@ -97,6 +100,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             # work moved between seats" is unanswerable from the run's own
             # records. Off by default -- it costs a ``git diff`` per boundary.
             "record_delivery_tree",
+            "run_id",
         ),
         sdk.OpenCollab.workflow: (
             "self",
@@ -113,6 +117,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "artifacts",
             "trace",
             "candidate_workspace",
+            "run_id",
         ),
     }
     for target, expected in expected_parameters.items():

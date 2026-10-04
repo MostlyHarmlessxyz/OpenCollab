@@ -64,6 +64,11 @@ def _non_empty(value: object, name: str) -> str:
     return value
 
 
+def _optional_run_id(value: object) -> str | None:
+    """A caller-chosen run id, written to every file the run leaves."""
+    return None if value is None else _non_empty(value, "run_id")
+
+
 def _path(value: str | os.PathLike[str] | None, name: str) -> Path | None:
     if value is None:
         return None
@@ -210,6 +215,7 @@ class OpenCollab:
         system_prompt: str | None = None,
         llm: Any | None = None,
         profile: str | None = None,
+        run_id: str | None = None,
     ) -> RunResult[str]:
         """Run a single agent using Base or an explicitly named profile.
 
@@ -217,6 +223,7 @@ class OpenCollab:
         customize the selected implementation for this run.
         """
         _non_empty(prompt, "prompt")
+        _optional_run_id(run_id)
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
         agent_profile = resolve_agent_profile(profile)
@@ -278,6 +285,7 @@ class OpenCollab:
                 system_prompt=system_prompt or agent_profile.system_prompt,
                 llm=llm,
                 agent_profile=agent_profile,
+                run_id=run_id,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc
@@ -308,6 +316,7 @@ class OpenCollab:
         max_steps: int | None = SESSION_MAX_STEPS,
         serialize_turns: bool = False,
         record_delivery_tree: bool = False,
+        run_id: str | None = None,
     ) -> RunResult[str]:
         """Run one scheduler-controlled team turn.
 
@@ -358,6 +367,7 @@ class OpenCollab:
         the key is absent rather than empty.
         """
         _non_empty(prompt, "prompt")
+        _optional_run_id(run_id)
         if not isinstance(trace, bool) or not isinstance(use_worktrees, bool):
             raise ValueError("trace and use_worktrees must be booleans")
         if not isinstance(prebuild_team, bool):
@@ -395,6 +405,7 @@ class OpenCollab:
                 environment=self._environment,
                 record_delivery_tree=record_delivery_tree,
                 budget_explicit=budget is not None,
+                run_id=run_id,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc
@@ -416,6 +427,7 @@ class OpenCollab:
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
         candidate_workspace: Any | None = None,
+        run_id: str | None = None,
     ) -> RunResult[Any]:
         """Run a workflow name, decorated function, or plain async function.
 
@@ -436,6 +448,7 @@ class OpenCollab:
         ``candidate_workspace`` injects an existing candidate workspace port,
         for environments whose result is more than a repository patch.
         """
+        _optional_run_id(run_id)
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
         resolved_agent_profile = (
@@ -504,6 +517,7 @@ class OpenCollab:
                 trace=trace,
                 environment=self._environment,
                 candidate_workspace=candidate_workspace,
+                run_id=run_id,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

@@ -221,9 +221,11 @@ def _persist_workflow_manifest(
     reason: str | None,
     failure_type: str | None,
     evidence_complete: bool,
+    run_id: str | None = None,
 ) -> Exception | None:
     try:
         manifest = _workflow_manifest_payload(
+            run_id=run_id,
             name=name,
             args=args,
             ctx=ctx,

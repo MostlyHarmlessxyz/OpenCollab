@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import posixpath
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -350,8 +351,12 @@ async def run_agent(
     system_prompt: str | None = None,
     llm: Any | None = None,
     agent_profile: SingleAgentProfile | None = None,
+    run_id: str | None = None,
 ) -> ProgrammaticResult:
     """Run the selected single-agent implementation behind the owned lifecycle."""
+    # One id per run, on every trajectory record and in the result, so two
+    # runs of one agent never share one and a caller's own files join on it.
+    run_id = run_id if run_id is not None else f"agent-{uuid.uuid4().hex}"
     resolved_profile = agent_profile if agent_profile is not None else resolve_agent_profile(None)
     resolved_tools = resolved_profile.resolve_tools(tools)
     agent = Agent(
@@ -386,7 +391,7 @@ async def run_agent(
     tracer = None
     if artifacts is not None and trace:
         tracer = Tracer(
-            run_id=name,
+            run_id=run_id,
             output_dir=str(artifacts),
             filename="trajectory.jsonl",
         )
@@ -428,6 +433,7 @@ async def run_agent(
             artifacts=artifacts,
             error=internal.error,
             metrics={
+                "run_id": run_id,
                 "steps": internal.step_count,
                 "outcome": internal.outcome,
                 "phase": internal.phase,
@@ -469,8 +475,10 @@ def _workflow_metrics(
     environment_cleanup_quiesced: bool | None,
     environment_quiesced: bool | None,
     agent_profile: Any | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     metrics = {
+        **({} if run_id is None else {"run_id": run_id}),
         "steps": 0 if details is None else details.steps,
         "sessions": 0 if details is None else details.sessions,
         "markup_recovered": 0 if details is None else details.markup_recovered,
@@ -506,8 +514,10 @@ async def run_workflow(
     environment: Any | None = None,
     agent_profile: Any | None = None,
     candidate_workspace: Any | None = None,
+    run_id: str | None = None,
 ) -> ProgrammaticResult:
     """Run one workflow and return its live metrics directly."""
+    run_id = run_id if run_id is not None else f"workflow-{uuid.uuid4().hex}"
     workflow_inputs = dict(inputs)
     if artifacts is not None:
         _require_json_workflow_inputs(workflow_inputs)
@@ -548,6 +558,7 @@ async def run_workflow(
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 agent_profile=agent_profile,
                 candidate_workspace=candidate_workspace,
+                run_id=run_id,
                 return_details=True,
                 cleanup_environment=owned_environment,
                 defer_manifest_completion=(
@@ -616,6 +627,7 @@ async def run_workflow(
         metrics = _workflow_metrics(
             details,
             agent_profile=agent_profile,
+            run_id=run_id,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=(
                 True if owned_environment else environment_cleanup_quiesced
@@ -646,6 +658,7 @@ async def run_workflow(
             metrics=_workflow_metrics(
                 details,
                 agent_profile=agent_profile,
+                run_id=run_id,
                 environment_owned=owned_environment,
                 environment_cleanup_quiesced=environment_cleanup_quiesced,
                 environment_quiesced=environment_quiesced,
@@ -665,6 +678,7 @@ async def run_workflow(
         metrics=_workflow_metrics(
             details,
             agent_profile=agent_profile,
+            run_id=run_id,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=environment_cleanup_quiesced,
             environment_quiesced=environment_quiesced,
@@ -739,6 +753,7 @@ async def run_team(
     environment: Environment | None = None,
     record_delivery_tree: bool = False,
     budget_explicit: bool = False,
+    run_id: str | None = None,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -768,6 +783,7 @@ async def run_team(
         environment=environment,
         record_delivery_tree=record_delivery_tree,
         budget_explicit=budget_explicit,
+        run_id=run_id,
     )
 
 
