@@ -14,8 +14,9 @@ async def _initialize_source_available_submodules(
     *,
     git_in: Callable[..., Awaitable[ExecResult]],
     source_prefix: str = "",
+    require_initialized: bool = True,
 ) -> None:
-    await _SourceSubmoduleTree(git_in)._initialize_source_submodule_tree(
+    await _SourceSubmoduleTree(git_in, require_initialized=require_initialized)._initialize_source_submodule_tree(
         source_repository,
         target_repository,
         source_prefix=source_prefix,
@@ -24,8 +25,9 @@ async def _initialize_source_available_submodules(
 
 
 class _SourceSubmoduleTree:
-    def __init__(self, git_in: Callable[..., Awaitable[ExecResult]]) -> None:
+    def __init__(self, git_in: Callable[..., Awaitable[ExecResult]], *, require_initialized: bool) -> None:
         self._git_in = git_in
+        self._require_initialized = require_initialized
 
     async def _configured_source_submodules(
         self,
@@ -83,7 +85,27 @@ class _SourceSubmoduleTree:
                 contained = os.path.commonpath((source_repository, source_module))
             except ValueError:
                 contained = ""
-            if contained != source_repository or not os.path.isdir(source_module):
+            if contained != source_repository:
+                raise RuntimeError(
+                    f"Git submodule is not initialized in source workspace: {configured_path}"
+                )
+            if not self._require_initialized and not os.path.lexists(os.path.join(source_module, ".git")):
+                state = await self._git_in(
+                    source_repository, "submodule", "status", "--", f":(literal){normalized_path}",
+                )
+                records = state.stdout.splitlines()
+                if (
+                    state.returncode != 0
+                    or state.stdout_truncated
+                    or state.stderr_truncated
+                    or len(records) != 1
+                    or not records[0]
+                    or records[0][0] not in "- +"
+                ):
+                    raise RuntimeError(f"cannot inspect Git submodule initialization: {configured_path}")
+                if records[0].startswith("-"):
+                    continue
+            if not os.path.isdir(source_module):
                 raise RuntimeError(
                     f"Git submodule is not initialized in source workspace: {configured_path}"
                 )
@@ -161,4 +183,3 @@ class _SourceSubmoduleTree:
                 )
         finally:
             active_sources.remove(source_repository)
-

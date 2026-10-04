@@ -309,7 +309,7 @@ class EnvCandidateWorkspace:
                     )
 
                 await _initialize_source_available_submodules(
-                    self._workspace, path, git_in=git_in,
+                    self._workspace, path, git_in=git_in, require_initialized=False,
                 )
             if source_patch.strip():
                 async with _candidate_temporary(
