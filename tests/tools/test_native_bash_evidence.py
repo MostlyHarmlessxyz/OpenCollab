@@ -248,3 +248,27 @@ def test_each_observer_retains_independent_records_and_returns_copies():
     copied["verified"] = False
     assert first.verification_records[0]["verified"] is True
     assert not second.verification_records and not second.verified_targets
+
+
+@pytest.mark.parametrize("command", ["printf changed > source.py", "cat source.py", "python -m pytest && true"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "exception"])
+def test_later_unverified_shell_leaves_historical_applicability_unknown(command, outcome):
+    tool = evidence_tools("bash")[0]
+    execute(tool, Environment())
+    later = Environment(code=1 if outcome == "failure" else 0)
+    if outcome == "exception":
+        async def interrupted(*args, **kwargs):
+            raise TimeoutError("shell interrupted")
+        later.exec_cmd = interrupted
+        with pytest.raises(TimeoutError):
+            execute(tool, later, command)
+    else:
+        execute(tool, later, command)
+    record = tool.verification_records[0]
+    assert record["exit_code"] == 0 and record["verified"] is True
+    assert record["applicability"] == "unknown"
+    assert record["post_test_commands"] == [command]
+    assert not tool.verified_targets
+    execute(tool, Environment())
+    assert tool.verification_records[-1]["applicability"] == "current"
+    assert TARGET in tool.verified_targets
