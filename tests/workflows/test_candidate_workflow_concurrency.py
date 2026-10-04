@@ -69,9 +69,15 @@ async def test_parallel_candidate_children_share_parent_agent_session_cap(tmp_pa
         await child.parallel([lambda: child.agent("one"), lambda: child.agent("two")])
         return "done"
 
+    async def candidate(label: str) -> Any:
+        try:
+            return await parent.candidate_workflow(nested, {}, label=label)
+        except Exception as exc:
+            return exc
+
     task = asyncio.create_task(parent.parallel([
-        lambda: parent.candidate_workflow(nested, {}, label="A"),
-        lambda: parent.candidate_workflow(nested, {}, label="B"),
+        lambda: candidate("A"),
+        lambda: candidate("B"),
     ]))
     try:
         await asyncio.wait_for(both_candidates_started.wait(), timeout=5)
@@ -83,8 +89,84 @@ async def test_parallel_candidate_children_share_parent_agent_session_cap(tmp_pa
         release.set()
     results = await asyncio.wait_for(task, timeout=10)
 
+    assert [getattr(result, "output", None) for result in results] == ["done", "done"], results
+    assert high_water == 2
+
+
+@pytest.mark.asyncio
+async def test_nested_candidate_pipelines_share_workflow_task_cap(tmp_path: Path) -> None:
+    running = 0
+    high_water = 0
+    admitted = asyncio.Event()
+    both_candidates_entered = asyncio.Event()
+    candidates_entered = 0
+    release = asyncio.Event()
+    parent = _context(_repository(tmp_path / "repo"), [], concurrency=2)
+
+    async def nested(child: Any, _args: dict[str, Any]) -> str:
+        nonlocal candidates_entered
+        candidates_entered += 1
+        if candidates_entered == 2:
+            both_candidates_entered.set()
+
+        async def gated(value: int, _item: int, _index: int) -> int:
+            nonlocal running, high_water
+            running += 1
+            high_water = max(high_water, running)
+            if running >= 2:
+                admitted.set()
+            try:
+                await release.wait()
+                return value
+            finally:
+                running -= 1
+
+        await child.pipeline([1, 2], gated)
+        return "done"
+
+    task = asyncio.create_task(parent.parallel([
+        lambda: parent.candidate_workflow(nested, {}, label="A"),
+        lambda: parent.candidate_workflow(nested, {}, label="B"),
+    ]))
+    try:
+        await asyncio.wait_for(both_candidates_entered.wait(), timeout=5)
+        await asyncio.wait_for(admitted.wait(), timeout=5)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert high_water <= 2
+    finally:
+        release.set()
+    results = await asyncio.wait_for(task, timeout=10)
+
     assert [result.output for result in results] == ["done", "done"]
     assert high_water == 2
+
+
+@pytest.mark.asyncio
+async def test_nested_candidate_pipeline_borrows_parent_task_slot_at_cap_one(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    parent = _context(_repository(tmp_path / "repo"), [], concurrency=1)
+
+    async def nested(child: Any, _args: dict[str, Any]) -> str:
+        async def gated(value: int, _item: int, _index: int) -> int:
+            entered.set()
+            await release.wait()
+            return value
+
+        values = await child.pipeline([1, 2], gated)
+        return ",".join(map(str, values))
+
+    task = asyncio.create_task(parent.parallel([
+        lambda: parent.candidate_workflow(nested, {}, label="nested"),
+    ]))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        release.set()
+    results = await asyncio.wait_for(task, timeout=10)
+
+    assert results[0].output == "1,2"
 
 
 @pytest.mark.asyncio

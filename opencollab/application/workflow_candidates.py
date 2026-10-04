@@ -203,6 +203,7 @@ class WorkflowCandidatesMixin:
             token = None
             candidate: CandidateRun | None = None
             failure: BaseException | None = None
+            preserve_lease = False
             try:
                 budget_lease = await self._acquire_budget_lease(
                     budget,
@@ -245,7 +246,19 @@ class WorkflowCandidatesMixin:
                     )
                     failure.__cause__ = exc
                     raise failure
-                source_after = await self._candidate_workspace.source_diff()
+                try:
+                    source_after = await self._candidate_workspace.source_diff()
+                except asyncio.CancelledError:
+                    preserve_lease = True
+                    raise
+                except Exception as exc:
+                    failure = CandidateWorkspaceTrackingError(
+                        f"candidate patch was captured, but could not verify source "
+                        f"worktree after candidate {label}; worktree preserved at "
+                        f"{lease.candidate_workspace}"
+                    )
+                    failure.__cause__ = exc
+                    raise failure
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate {label}. "
@@ -276,7 +289,10 @@ class WorkflowCandidatesMixin:
                         await asyncio.gather(*pending, return_exceptions=True)
                     self.budget.release(budget_lease)
             if failure is not None:
-                if not isinstance(failure, (CandidateCaptureError, CandidateWorkspaceTrackingError)):
+                if (
+                    not preserve_lease
+                    and not isinstance(failure, (CandidateCaptureError, CandidateWorkspaceTrackingError))
+                ):
                     try:
                         await lease.cleanup()
                     except Exception as cleanup_exc:
@@ -352,6 +368,9 @@ class WorkflowCandidatesMixin:
                 # from the parent's cap, without the candidate wrapper holding a
                 # slot and reducing child parallelism (or deadlocking at one).
                 child._semaphore = self._semaphore
+                child._task_semaphore = self._task_semaphore
+                child._active_task_concurrency_permit = self._active_task_concurrency_permit
+                child._budget_escape_state = self._budget_escape_state
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
@@ -368,7 +387,19 @@ class WorkflowCandidatesMixin:
                     )
                     failure.__cause__ = exc
                     raise failure
-                source_after = await self._candidate_workspace.source_diff()
+                try:
+                    source_after = await self._candidate_workspace.source_diff()
+                except asyncio.CancelledError:
+                    preserve_lease = True
+                    raise
+                except Exception as exc:
+                    failure = CandidateWorkspaceTrackingError(
+                        f"candidate patch was captured, but could not verify source "
+                        f"worktree after candidate workflow {label}; worktree preserved at "
+                        f"{lease.candidate_workspace}"
+                    )
+                    failure.__cause__ = exc
+                    raise failure
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate workflow {label}. "
