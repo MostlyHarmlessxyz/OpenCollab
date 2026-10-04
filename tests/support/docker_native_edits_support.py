@@ -109,13 +109,18 @@ def edit_call(mode: str, path: str, index: int) -> tuple[object, dict]:
     }
 
 
-async def workflow_edits(workspace: Path, monkeypatch, modes, *, backend="docker", parallel=True, separate=False):
+async def workflow_edits(
+    workspace: Path, monkeypatch, modes, *, backend="docker", parallel=True, separate=False, relative=(False, False),
+):
     paths = [workspace / "module.py", workspace / ("other.py" if separate else "module.py")]
     for path in paths:
         path.write_text("alpha = 1\nbeta = 1\n")
     transport = LocalDockerTransport(workspace)
     env = docker_environment(workspace, transport) if backend == "docker" else LocalEnvironment(str(workspace))
-    actions = [edit_call(mode, str(paths[index]), index) for index, mode in enumerate(modes)]
+    actions = [
+        edit_call(mode, paths[index].name if relative[index] else str(paths[index]), index)
+        for index, mode in enumerate(modes)
+    ]
 
     async def complete(_client, messages, **_kwargs):
         if any(message.get("role") == "tool" for message in messages):

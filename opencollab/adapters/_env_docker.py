@@ -571,6 +571,19 @@ class DockerEnvironment(Environment):
         if container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         target = self._normalize_container_path(path)
+        if not posixpath.isabs(target):
+            # Resolve through the same execution wrapper as file commands. The
+            # container's default directory or a command prefix may differ from
+            # workspace, so a host-side join would identify the wrong file.
+            result = await self._exec(
+                "printf '\\0' && pwd -P && printf '\\0'",
+                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+            )
+            parts = result.stdout.rsplit("\0", 2)
+            directory = parts[-2].removesuffix("\n") if len(parts) == 3 else ""
+            if result.returncode != 0 or result.stdout_truncated or not posixpath.isabs(directory):
+                raise OSError("cannot resolve container file execution directory")
+            target = posixpath.normpath(posixpath.join(directory, target))
         key = f"{container_id}\0{target}"
         task = asyncio.current_task()
         assert task is not None
