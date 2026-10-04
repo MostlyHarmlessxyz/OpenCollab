@@ -14,9 +14,11 @@ from typing import Any
 
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
+from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
 from opencollab.adapters.env import DockerWorkspaceEnvironment
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
@@ -146,7 +148,7 @@ async def _raw_diff_at(
 @dataclass(slots=True)
 class _CandidateLease:
     base_environment: Any
-    environment: Any
+    environment: Any | None
     source_workspace: str
     candidate_workspace: str
     base_revision: str
@@ -209,16 +211,32 @@ class _CandidateLease:
             )
 
     async def cleanup(self) -> None:
+        await await_owned_operation(self._cleanup_resources(), propagate_cancellation=True)
+
+    async def _cleanup_resources(self) -> None:
         if self.cleaned:
             return
-        await self.environment.cleanup()
-        result = await self.base_environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(self.source_workspace)} worktree remove --force -- "
-            f"{shlex.quote(self.candidate_workspace)}",
-            timeout=120,
+        if self.environment is not None:
+            await self.environment.cleanup()
+        git = f"git -C {shlex.quote(self.source_workspace)}"
+        listed = _complete(
+            await self.base_environment.exec_cmd(f"{git} worktree list --porcelain -z", timeout=120),
+            "candidate worktree cleanup listing",
         )
-        _complete(result, "candidate worktree cleanup")
+        normalize = os.path.realpath if isinstance(self.base_environment, LocalEnvironment) else posixpath.normpath
+        registered = {
+            normalize(field.removeprefix("worktree "))
+            for field in listed.split("\0")
+            if field.startswith("worktree ")
+        }
+        if normalize(self.candidate_workspace) in registered:
+            command = f"{git} worktree remove --force -- {shlex.quote(self.candidate_workspace)}"
+        else:
+            command = f"rm -rf -- {shlex.quote(self.candidate_workspace)}"
+        _complete(
+            await self.base_environment.exec_cmd(command, timeout=120),
+            "candidate worktree cleanup",
+        )
         self.cleaned = True
 
 
@@ -264,28 +282,37 @@ class EnvCandidateWorkspace:
         source_patch = await _raw_diff_at(
             self._environment, self._workspace, base_revision=base_revision,
         )
-        result = await self._environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(self._workspace)} worktree add --detach -- "
-            f"{shlex.quote(path)} {shlex.quote(base_revision)}",
-            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-        )
-        _complete(result, f"candidate worktree setup for {label}")
-        environment = await self._candidate_environment(path)
-        await environment.setup()
         lease = _CandidateLease(
             base_environment=self._environment,
-            environment=environment,
+            environment=None,
             source_workspace=self._workspace,
             candidate_workspace=path,
             base_revision=base_revision,
         )
         try:
+            # Keep each bounded setup command alive until it settles. Cleanup
+            # can then remove this worktree after a caller cancellation without
+            # racing a command that is still creating its files.
+            result = await await_owned_operation(
+                self._environment.exec_cmd(
+                    "git -C "
+                    f"{shlex.quote(self._workspace)} worktree add --detach -- "
+                    f"{shlex.quote(path)} {shlex.quote(base_revision)}",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                propagate_cancellation=True,
+            )
+            _complete(result, f"candidate worktree setup for {label}")
+            lease.environment = await self._candidate_environment(path)
+            await lease.environment.setup()
             if isinstance(self._environment, LocalEnvironment):
                 async def git_in(workspace: str, *arguments: str) -> Any:
-                    return await self._environment.exec_cmd(
-                        shlex.join(("git", "-C", workspace, *arguments)),
-                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    return await await_owned_operation(
+                        self._environment.exec_cmd(
+                            shlex.join(("git", "-C", workspace, *arguments)),
+                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                        ),
+                        propagate_cancellation=True,
                     )
 
                 await _initialize_source_available_submodules(
@@ -297,35 +324,53 @@ class EnvCandidateWorkspace:
                     prefix=".candidate-source-", suffix=".patch",
                 ) as source_file:
                     _complete(
-                        await self._environment.exec_cmd(
-                            f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
-                            f"-- {shlex.quote(source_file)}",
-                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                        await await_owned_operation(
+                            self._environment.exec_cmd(
+                                f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
+                                f"-- {shlex.quote(source_file)}",
+                                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                            ),
+                            propagate_cancellation=True,
                         ),
                         "candidate source contents",
                     )
                 # The candidate's index records its starting contents, including
                 # source untracked files, while the source index stays untouched.
                 lease.base_revision = _complete(
-                    await self._environment.exec_cmd(
-                        f"git -C {shlex.quote(path)} write-tree",
-                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    await await_owned_operation(
+                        self._environment.exec_cmd(
+                            f"git -C {shlex.quote(path)} write-tree",
+                            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                        ),
+                        propagate_cancellation=True,
                     ),
                     "candidate source tree",
                 ).strip()
             # A worktree-local ref retains the original contents for recovery
             # throughout the lease, including after commits or Git collection.
             _complete(
-                await self._environment.exec_cmd(
-                    f"git -C {shlex.quote(path)} update-ref refs/worktree/opencollab-source "
-                    f"{shlex.quote(lease.base_revision)}",
-                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                await await_owned_operation(
+                    self._environment.exec_cmd(
+                        f"git -C {shlex.quote(path)} update-ref refs/worktree/opencollab-source "
+                        f"{shlex.quote(lease.base_revision)}",
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    ),
+                    propagate_cancellation=True,
                 ),
                 "candidate source recovery reference",
             )
             return lease
-        except BaseException:
-            await lease.cleanup()
+        except BaseException as failure:
+            if isinstance(failure, ProcessCleanupError) or getattr(self._environment, "revoked", False):
+                add_exception_note(failure, f"candidate worktree retained until command cleanup completes: {path}")
+            else:
+                try:
+                    await await_owned_operation(lease.cleanup())
+                except BaseException as cleanup_error:
+                    add_exception_note(
+                        failure,
+                        f"candidate initialization cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
+                    )
             raise
 
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:

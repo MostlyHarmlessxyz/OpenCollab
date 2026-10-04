@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_local import LocalEnvironment
+from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from tests.workflows.test_workflow_candidate_workspace import _git, _repository
 
@@ -90,6 +92,48 @@ async def test_cancelled_candidate_initialization_cleans_only_its_worktree(tmp_p
             if path.exists():
                 _git(repo, "worktree", "remove", "--force", str(path))
         await healthy.cleanup()
+        await base.cleanup()
+
+
+@pytest.mark.parametrize("quiescent", [False, True])
+async def test_failed_checkout_removes_partial_files_after_command_settles(tmp_path, monkeypatch, quiescent):
+    repo = _repository(tmp_path)
+    base = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(base)
+    execute = base.exec_cmd
+    created = []
+    failure = ProcessCleanupError("checkout command is still active")
+
+    async def partial_checkout(command, **kwargs):
+        arguments = shlex.split(command)
+        if "worktree" in arguments and "add" in arguments:
+            path = Path(arguments[-2])
+            path.mkdir()
+            (path / "partial.txt").write_text("partial checkout\n")
+            created.append(path)
+            if not quiescent:
+                raise failure
+            return ExecResult(128, "", "checkout failed after creating files")
+        return await execute(command, **kwargs)
+
+    monkeypatch.setattr(base, "exec_cmd", partial_checkout)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            await workspace.acquire("partial")
+        if quiescent:
+            assert "checkout failed after creating files" in str(caught.value)
+            assert not created[0].exists()
+        else:
+            assert caught.value is failure
+            assert created[0].exists()
+            assert any("retained" in note for note in getattr(failure, "__notes__", ()))
+        assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+        assert await base.read_file("source.py") == "value = 1\n"
+    finally:
+        for path in created:
+            if path.exists():
+                (path / "partial.txt").unlink()
+                path.rmdir()
         await base.cleanup()
 
 
