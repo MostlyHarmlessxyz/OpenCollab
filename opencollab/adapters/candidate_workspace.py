@@ -302,6 +302,23 @@ class EnvCandidateWorkspace:
             lease.environment = await self._candidate_environment(path)
             await lease.environment.setup()
             if isinstance(self._environment, LocalEnvironment):
+                source_repository = _complete(
+                    await self._environment.exec_cmd(
+                        f"git -C {shlex.quote(self._workspace)} rev-parse --show-toplevel",
+                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                    ),
+                    "candidate source repository root",
+                ).strip()
+                source_repository = os.path.realpath(source_repository)
+                source_workspace = os.path.realpath(self._workspace)
+                try:
+                    if os.path.commonpath((source_repository, source_workspace)) != source_repository:
+                        raise RuntimeError("candidate source workspace is outside its Git repository")
+                except ValueError as exc:
+                    raise RuntimeError("candidate source workspace is outside its Git repository") from exc
+                relative_source = os.path.relpath(source_workspace, source_repository)
+                source_prefix = "" if relative_source == "." else relative_source.replace(os.sep, "/")
+
                 async def git_in(workspace: str, *arguments: str) -> Any:
                     return await self._environment.exec_cmd(
                         shlex.join(("git", "-C", workspace, *arguments)),
@@ -309,7 +326,11 @@ class EnvCandidateWorkspace:
                     )
 
                 await _initialize_source_available_submodules(
-                    self._workspace, path, git_in=git_in, require_initialized=False,
+                    source_repository,
+                    path,
+                    git_in=git_in,
+                    source_prefix=source_prefix,
+                    require_initialized=False,
                 )
             if source_patch.strip():
                 async with _candidate_temporary(
