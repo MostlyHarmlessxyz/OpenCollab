@@ -47,6 +47,7 @@ async def run_team(
     environment: Environment | None = None,
     record_delivery_tree: bool = False,
     budget_explicit: bool = False,
+    run_id: str | None = None,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -78,7 +79,7 @@ async def run_team(
     _programmatic._claim_artifacts(artifacts)
     # One id per run, written to the trajectory, the team.json manifest and the
     # result, so the three join on it and two runs never share one.
-    run_id = f"team-{uuid.uuid4().hex}"
+    run_id = run_id if run_id is not None else f"team-{uuid.uuid4().hex}"
     if artifacts is not None and trace:
         context.tracer = Tracer(
             run_id=run_id,

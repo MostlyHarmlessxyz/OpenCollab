@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -47,7 +48,9 @@ async def test_agent_uses_real_hardened_runtime_and_persists_evidence(
     assert result.output == "finished"
     assert result.reason is None
     assert result.tokens == 6
-    assert result.metrics == _completed_agent_metrics()
+    metrics = dict(result.metrics)
+    assert re.fullmatch(r"agent-[0-9a-f]{32}", metrics.pop("run_id"))
+    assert metrics == _completed_agent_metrics()
     assert result.artifacts == artifacts.resolve()
     assert (artifacts / ".opencollab-run").read_text() == "claimed\n"
     transcript = json.loads((artifacts / "agent.json").read_text())
@@ -410,7 +413,9 @@ async def test_workflow_uses_real_runtime_and_returns_live_metrics(
     assert result.ok
     assert result.output == {"answer": 4}
     assert result.tokens == 0
-    assert result.metrics == {
+    metrics = dict(result.metrics)
+    assert re.fullmatch(r"workflow-[0-9a-f]{32}", metrics.pop("run_id"))
+    assert metrics == {
         "steps": 0,
         "sessions": 0,
         "markup_recovered": 0,
@@ -553,7 +558,9 @@ async def test_workflow_timeout_is_a_stopped_result(tmp_path: Path) -> None:
     assert result.status == "stopped"
     assert result.reason == "timeout"
     assert result.tokens == 0
-    assert result.metrics == {
+    metrics = dict(result.metrics)
+    assert re.fullmatch(r"workflow-[0-9a-f]{32}", metrics.pop("run_id"))
+    assert metrics == {
         "steps": 0,
         "sessions": 0,
         "markup_recovered": 0,

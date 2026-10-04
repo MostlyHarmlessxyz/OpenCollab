@@ -9,6 +9,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+Every SDK run has a unique run id. A single agent and a workflow used to stamp
+their records with the agent's or the workflow's name, so all runs of one
+setting shared it; they now generate `agent-<uuid>` and `workflow-<uuid>` as a
+team already generated `team-<uuid>`. The id is on every trajectory record, in
+`result.metrics["run_id"]`, and in `workflow.json` or `team.json`. `agent`,
+`team` and `workflow` accept `run_id=` so a harness can name the run and join
+its own records to the run's on that id.
+
 Duo V8 asks coders to verify the final deliverable through the task's intended
 entry points or outputs, check directly affected existing behavior, and rerun
 focused checks after the last relevant edit or cleanup. Shared task-oriented

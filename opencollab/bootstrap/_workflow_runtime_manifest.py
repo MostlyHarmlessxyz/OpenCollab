@@ -30,6 +30,8 @@ def _workflow_manifest_payload(
     return copy.deepcopy(
         {
             "workflow": name,
+            # The id on every record of this run's trajectory, or None untraced.
+            "run_id": getattr(tracer, "run_id", None),
             "args": args,
             "sessions": len(ctx.sessions),
             "tokens_spent": ctx.budget.spent(),

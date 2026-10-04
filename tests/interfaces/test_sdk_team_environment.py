@@ -129,7 +129,7 @@ def _scripted_llm(observed: dict):
 
 @pytest.fixture
 def run_team_in(tmp_path, monkeypatch):
-    async def run(*, environment) -> dict:
+    async def run(*, environment, **team_kwargs) -> dict:
         anchor = _repo(tmp_path / "anchor", "anchor-workspace")
         artifacts = tmp_path / "artifacts"
         observed: dict = {}
@@ -154,6 +154,7 @@ def run_team_in(tmp_path, monkeypatch):
             prebuild_team=True,
             allow_unisolated_shell=True,
             serialize_turns=True,
+            **team_kwargs,
         )
         observed["records"] = [
             json.loads(line)
@@ -236,3 +237,14 @@ async def test_one_run_id_joins_the_trajectory_the_manifest_and_the_result(run_t
     assert {record["run_id"] for record in observed["records"]} == {run_id}
     manifest = json.loads((result.artifacts / "team.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == run_id
+
+
+async def test_a_team_uses_the_run_id_its_caller_supplies(run_team_in):
+    """A harness that names the run finds that name in all three places."""
+    observed = await run_team_in(environment=None, run_id="batch-7-team")
+    result = observed["result"]
+
+    assert result.metrics["run_id"] == "batch-7-team"
+    assert {record["run_id"] for record in observed["records"]} == {"batch-7-team"}
+    manifest = json.loads((result.artifacts / "team.json").read_text(encoding="utf-8"))
+    assert manifest["run_id"] == "batch-7-team"

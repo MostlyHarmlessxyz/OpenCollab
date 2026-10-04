@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import Any, Literal
 
 from opencollab.adapters.trace import Tracer
@@ -92,6 +93,7 @@ async def run_workflow(
     cleanup_environment: bool = True,
     defer_manifest_completion: bool = False,
     candidate_workspace: Any | None = None,
+    run_id: str | None = None,
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
@@ -108,7 +110,13 @@ async def run_workflow(
     )
     owns_tracer = tracer is None and save_dir is not None and trace
     if owns_tracer:
-        tracer = Tracer(run_id=name, output_dir=save_dir, filename=ORCHESTRATION_FILENAME)
+        # A unique id rather than the workflow's name, which every run of the
+        # workflow shares; ``workflow.json`` records the same id.
+        tracer = Tracer(
+            run_id=run_id if run_id is not None else f"workflow-{uuid.uuid4().hex}",
+            output_dir=save_dir,
+            filename=ORCHESTRATION_FILENAME,
+        )
 
     try:
         ctx = build_workflow_context(
