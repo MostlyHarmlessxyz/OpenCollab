@@ -201,9 +201,15 @@ def _parse_response(
                 },
             })
 
+    reasoning = getattr(message, "reasoning_content", None)
+    if not isinstance(reasoning, str) or not reasoning:
+        reasoning = getattr(message, "reasoning", None)
+    if not isinstance(reasoning, str) or not reasoning:
+        reasoning = None
+
     return _build_chat_response(
         message.content,
-        getattr(message, "reasoning_content", None) or None,
+        reasoning,
         tool_calls,
         choice.finish_reason,
         _clean_provider_model(getattr(resp, "model", None)),
