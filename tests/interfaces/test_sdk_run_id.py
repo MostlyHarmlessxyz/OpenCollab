@@ -94,6 +94,29 @@ async def test_a_workflow_uses_the_run_id_its_caller_supplies(tmp_path):
     assert manifest["run_id"] == "batch-7-duo"
 
 
+@pytest.mark.parametrize("trace", [False, True])
+@pytest.mark.parametrize("run_id", [None, "batch-7-workflow"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_workflow_manifest_keeps_identity_independently_of_tracing(tmp_path, trace, run_id, fails):
+    async def run(ctx, args):
+        await ctx.log("workflow entered")
+        if fails:
+            raise ValueError("controlled workflow failure")
+        return "done"
+
+    artifacts = tmp_path / "run"
+    result = await OpenCollab(tmp_path).workflow(run, artifacts=artifacts, trace=trace, run_id=run_id)
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+
+    assert result.status == ("failed" if fails else "completed")
+    assert manifest["run_id"] == result.metrics["run_id"]
+    if run_id is None:
+        assert re.fullmatch(r"workflow-[0-9a-f]{32}", manifest["run_id"])
+    else:
+        assert manifest["run_id"] == run_id
+    assert manifest["trace_enabled"] is trace
+
+
 @pytest.mark.parametrize("bad", ["", "  ", 7])
 async def test_a_run_id_must_be_a_non_empty_string(tmp_path, bad):
     client = OpenCollab(tmp_path)

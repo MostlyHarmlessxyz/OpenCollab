@@ -108,12 +108,13 @@ async def run_workflow(
         if isinstance(metadata, WorkflowSpec)
         else getattr(fn, "__name__", "workflow")
     )
+    run_id = getattr(tracer, "run_id", None) or run_id or f"workflow-{uuid.uuid4().hex}"
     owns_tracer = tracer is None and save_dir is not None and trace
     if owns_tracer:
         # A unique id rather than the workflow's name, which every run of the
         # workflow shares; ``workflow.json`` records the same id.
         tracer = Tracer(
-            run_id=run_id if run_id is not None else f"workflow-{uuid.uuid4().hex}",
+            run_id=run_id,
             output_dir=save_dir,
             filename=ORCHESTRATION_FILENAME,
         )
@@ -214,6 +215,7 @@ async def run_workflow(
     ):
         manifest_error = _persist_workflow_manifest(
             save_dir,
+            run_id=run_id,
             name=name,
             args=args,
             ctx=ctx,
