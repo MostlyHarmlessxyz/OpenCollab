@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import posixpath
 import re
 import shlex
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import NoReturn
 
 from opencollab.adapters._env_base import (
@@ -38,6 +39,7 @@ _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _FULL_ID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _WRITE_LOCKS: dict[str, asyncio.Lock] = {}
+_WRITE_LOCK_OWNERS: dict[str, asyncio.Task] = {}
 
 # Git refuses to commit without an author, and a benchmark image is not
 # configured with one: ``git commit`` inside the container fails with "Please
@@ -560,16 +562,34 @@ class DockerEnvironment(Environment):
     async def write_file_with_change(self, path: str, content: str) -> bool | None:
         return await self._write_file(path, content, observe_change=True)
 
-    async def _write_file(self, path: str, content: str, *, observe_change: bool) -> bool | None:
+    @contextlib.asynccontextmanager
+    async def file_write_lock(self, path: str) -> AsyncIterator[str]:
+        """Hold the target lock across a native edit, including its final write."""
         self._ensure_active()
         await self._bind_attached()
         container_id = self._container_id
         if container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         target = self._normalize_container_path(path)
-        lock = _WRITE_LOCKS.setdefault(f"{container_id}\0{target}", asyncio.Lock())
+        key = f"{container_id}\0{target}"
+        task = asyncio.current_task()
+        assert task is not None
+        # Native tools already hold this lock when they call write_file. Only
+        # the actual owning task can reenter; a spawned task must still wait.
+        if _WRITE_LOCK_OWNERS.get(key) is task:
+            yield target
+            return
+        lock = _WRITE_LOCKS.setdefault(key, asyncio.Lock())
         async with lock:
             self._ensure_active()
+            _WRITE_LOCK_OWNERS[key] = task
+            try:
+                yield target
+            finally:
+                _WRITE_LOCK_OWNERS.pop(key, None)
+
+    async def _write_file(self, path: str, content: str, *, observe_change: bool) -> bool | None:
+        async with self.file_write_lock(path) as target:
             return await self._write_file_atomic(target, content, observe_change=observe_change)
 
     @staticmethod
