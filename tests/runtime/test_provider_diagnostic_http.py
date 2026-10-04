@@ -42,7 +42,8 @@ async def test_diagnostic_responses_configuration_and_sdk_cleanup(monkeypatch, t
     config_path = tmp_path / "config.env"
     config_path.write_text(
         "OPENCOLLAB_MODEL=o1-pro\nOPENCOLLAB_PROVIDER=openai\nOPENCOLLAB_WIRE_PROTOCOL=responses\n"
-        "OPENCOLLAB_API_KEY=test-placeholder\nOPENCOLLAB_BASE_URL=https://provider.invalid/v1\n"  # pragma: allowlist secret
+        "OPENCOLLAB_API_KEY=test-placeholder\n"  # pragma: allowlist secret
+        "OPENCOLLAB_BASE_URL=https://provider.invalid/v1\n"
         "OPENCOLLAB_LLM_MAX_RETRIES=0\n",
     )
     with patch.dict(os.environ, {"OPENCOLLAB_CONFIG_FILE": str(config_path)}, clear=True):

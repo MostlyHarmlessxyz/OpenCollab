@@ -86,7 +86,10 @@ async def test_provider_diagnostic_closes_injected_client_on_failure(monkeypatch
         async def close(self):
             self.closed = True
 
-    monkeypatch.setattr(check_dashscope, "build_config", lambda workspace: OpenCollabConfig(api_key="test-placeholder"))  # pragma: allowlist secret
+    monkeypatch.setattr(
+        check_dashscope, "build_config",
+        lambda workspace: OpenCollabConfig(api_key="test-placeholder"),  # pragma: allowlist secret
+    )
     with pytest.raises(RuntimeError, match="provider failed"):
         await check_dashscope.request_completion("connect", client_type=FakeClient)
     assert clients[0].closed is True
