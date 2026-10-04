@@ -226,6 +226,18 @@ class Scheduler(
         # grant; tokens already consumed remain in ``used_tokens``.
         self._turn_lease: dict[int, int] = {}
         self._lease_baseline: dict[int, int] = {}
+        # Dynamic-roster leases whose provider generation outlived its driver
+        # are held by cleanup-task group until late usage has been reconciled.
+        self._pending_provider_budget_leases: dict[
+            object,
+            tuple[
+                int,
+                int,
+                int,
+                frozenset[asyncio.Task[Any]],
+                set[asyncio.Task[Any]],
+            ],
+        ] = {}
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
