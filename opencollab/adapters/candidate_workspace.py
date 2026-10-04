@@ -159,7 +159,10 @@ class _CandidateLease:
             self.base_environment, self.source_workspace,
             "", prefix=".candidate-capture-index-",
         ) as index_file:
-            git = f"GIT_INDEX_FILE={shlex.quote(index_file)} git -C {shlex.quote(self.candidate_workspace)}"
+            git = (
+                f"GIT_INDEX_FILE={shlex.quote(index_file)} "
+                f"git -c core.filemode=true -C {shlex.quote(self.candidate_workspace)}"
+            )
             # Stage the current contents in an owned temporary index. Candidate
             # commits and index resets leave the same delivered file changes.
             _complete(
