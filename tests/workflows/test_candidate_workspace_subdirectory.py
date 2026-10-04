@@ -22,7 +22,7 @@ async def test_subdirectory_candidate_inherits_edits_and_adopts_at_repository_ro
     (package / "binary.bin").write_bytes(b"source\x00\xff\n")
     if tracked:
         _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "记录子目录文件")
+        _git(repo, "commit", "-m", "\u8bb0\u5f55\u5b50\u76ee\u5f55\u6587\u4ef6")
     (repo / "source.py").write_text("value = 100\n")
     source_index = _git(repo, "ls-files", "--stage")
     environment = LocalEnvironment(str(package))
@@ -60,7 +60,7 @@ async def test_candidate_session_uses_subdirectory_relative_paths(tmp_path, mode
     package.mkdir()
     (package / "source.py").write_text("value = 10\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "记录子目录文件")
+    _git(repo, "commit", "-m", "\u8bb0\u5f55\u5b50\u76ee\u5f55\u6587\u4ef6")
     environment = LocalEnvironment(str(package))
     context = WorkflowContext(_Factory(environment), candidate_workspace=EnvCandidateWorkspace(environment))
 
@@ -89,7 +89,7 @@ async def test_linked_subdirectory_candidate_preserves_paths_and_source_edits(tm
     package.mkdir()
     (package / "source.py").write_text("value = 10\n")
     _git(main, "add", ".")
-    _git(main, "commit", "-m", "记录子目录文件")
+    _git(main, "commit", "-m", "\u8bb0\u5f55\u5b50\u76ee\u5f55\u6587\u4ef6")
     repo = tmp_path / "linked"
     _git(main, "worktree", "add", "--detach", str(repo))
     environment = LocalEnvironment(str(repo / "package"))

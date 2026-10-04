@@ -20,7 +20,7 @@ async def test_candidate_delivers_actual_script_mode(tmp_path, filemode, initial
     script.write_text("#!/bin/sh\necho original\n")
     script.chmod(initial)
     _git(repo, "add", "message.sh")
-    _git(repo, "commit", "-m", "记录脚本文件")
+    _git(repo, "commit", "-m", "\u8bb0\u5f55\u811a\u672c\u6587\u4ef6")
     _git(repo, "config", "core.filemode", str(filemode).lower())
     environment = LocalEnvironment(str(repo))
     workspace = EnvCandidateWorkspace(environment)

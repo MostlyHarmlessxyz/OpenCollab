@@ -25,7 +25,7 @@ def repository(tmp_path, monkeypatch):
         ("init", "-q"),
         ("add", "source.txt"),
         ("-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
-         "-c", "commit.gpgsign=false", "commit", "-qm", "初始化测试仓库"),
+         "-c", "commit.gpgsign=false", "commit", "-qm", "\u521d\u59cb\u5316\u6d4b\u8bd5\u4ed3\u5e93"),
     ):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
     return tmp_path
