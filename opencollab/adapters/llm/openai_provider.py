@@ -30,6 +30,7 @@ from opencollab.adapters.llm.tool_contracts import (
 from opencollab.adapters.llm.types import (
     LLMResponse,
     model_capabilities,
+    responses_sampling_supported,
 )
 
 # ``extra_body`` is merged into the OpenAI SDK's request payload after the
@@ -108,6 +109,10 @@ def _build_request_kwargs(
     keep_reasoning_content: bool | None = None,
 ) -> dict[str, Any]:
     reasoning_model = _uses_reasoning_request_fields(model)
+    sampling_supported = not reasoning_model
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if re.fullmatch(r"gpt-5\.(?:1|2|4)(?:-\d{4}-\d{2}-\d{2})?", leaf):
+        sampling_supported = responses_sampling_supported(leaf, reasoning_effort)
     if keep_reasoning_content is None:
         keep_reasoning_content = _keeps_reasoning_content(model, thinking, thinking_params)
     kwargs: dict[str, Any] = {
@@ -116,11 +121,11 @@ def _build_request_kwargs(
             messages, keep_reasoning_content=keep_reasoning_content
         ),
     }
-    if not reasoning_model:
+    if sampling_supported:
         kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
-    if top_p is not None and not reasoning_model:
+    if top_p is not None and sampling_supported:
         kwargs["top_p"] = top_p
     if max_output_tokens is not None:
         token_field = "max_completion_tokens" if reasoning_model else "max_tokens"
