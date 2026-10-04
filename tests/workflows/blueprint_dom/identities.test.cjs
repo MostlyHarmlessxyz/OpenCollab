@@ -52,6 +52,18 @@ test("ASCII collision checks preserve distinct non-ASCII identities", t => {
   assert.ok(view.resolvedConfig(view.saveExport()).roles.kımi);
 });
 
+test("self case-only renames retain existing case-variant topology references", t => {
+  const view = openBlueprint(t, team().replace("[\"coder\", auditor]", "[\"coder\", Auditor]"));
+  const before = view.resolvedConfig(view.source);
+  view.click('[data-act="edit"]');
+  view.input('[data-rename="auditor"]', "AUDITOR", "change");
+  assert.ok(view.exported().roles.AUDITOR);
+  const loaded = view.resolvedConfig(view.saveExport());
+  assert.deepEqual(loaded.topology.lead.sort(), ["AUDITOR", "coder"].sort());
+  assert.deepEqual(loaded.roles.AUDITOR, before.roles.auditor);
+  assert.ok(view.document.querySelector(".stats .pill.ok"));
+});
+
 test("case variants of referenced ad-hoc roles cannot merge topology nodes", t => {
   const view = openBlueprint(t, team("coder", "ghost"));
   const before = view.resolvedConfig(view.source);
@@ -73,7 +85,9 @@ test("loaded case-colliding roles are reported until one identity is repaired", 
   view.click('[data-act="edit"]');
   view.input('[data-rename="CODER"]', "auditor", "change");
   assert.equal(view.document.querySelectorAll(".issue.error").length, 0);
-  assert.ok(view.resolvedConfig(view.saveExport()).roles.auditor);
+  const loaded = view.resolvedConfig(view.saveExport());
+  assert.ok(loaded.roles.auditor);
+  assert.deepEqual(loaded.topology.lead.sort(), ["auditor", "coder"]);
 });
 
 test("new role names skip existing ASCII case variants", t => {

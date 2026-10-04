@@ -451,18 +451,24 @@
     if (!neu || neu === oldName) { render(); return; }
     // revert if the new name collides with a declared role OR an ad-hoc node
     // referenced in topology — merging onto either silently drops/merges edges.
+    var declared = team.roles;
+    function ownReference(name) {
+      return name === oldName || (!Object.prototype.hasOwnProperty.call(declared, name)
+        && sameEditableIdentity(name, oldName));
+    }
     var refd = Object.create(null);
     Object.keys(team.topology).forEach(function (s) { refd[s] = 1; (team.topology[s] || []).forEach(function (d) { refd[d] = 1; }); });
-    var existing = Object.keys(team.roles).concat(Object.keys(refd));
-    if (existing.some(function (name) { return name !== oldName && sameEditableIdentity(name, neu); })) { render(); return; }
+    var declaredCollision = Object.keys(declared).some(function (name) { return name !== oldName && sameEditableIdentity(name, neu); });
+    var referencedCollision = Object.keys(refd).some(function (name) { return !ownReference(name) && sameEditableIdentity(name, neu); });
+    if (declaredCollision || referencedCollision) { render(); return; }
     var nr = Object.create(null); Object.keys(team.roles).forEach(function (k) { nr[k === oldName ? neu : k] = team.roles[k]; });
     team.roles = nr;
     var nt = Object.create(null); Object.keys(team.topology).forEach(function (s) {
-      nt[s === oldName ? neu : s] = (team.topology[s] || []).map(function (d) { return d === oldName ? neu : d; });
+      nt[ownReference(s) ? neu : s] = (team.topology[s] || []).map(function (d) { return ownReference(d) ? neu : d; });
     });
     team.topology = nt;
-    if (team.entry === oldName) team.entry = neu;
-    if (team.entryExplicit === oldName) team.entryExplicit = neu;
+    if (ownReference(team.entry)) team.entry = neu;
+    if (team.entryExplicit != null && ownReference(team.entryExplicit)) team.entryExplicit = neu;
     render();
   }
 
