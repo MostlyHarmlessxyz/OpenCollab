@@ -29,6 +29,7 @@ class CandidateRun:
     test_records: tuple[dict[str, Any], ...]
     verified_targets: tuple[str, ...]
     lifecycle_errors: tuple[str, ...] = ()
+    source_revision: str | None = None
 
 
 class CandidateCaptureError(RuntimeError):
@@ -180,6 +181,11 @@ def _verification_evidence(
 class WorkflowCandidatesMixin:
     """Runs agent sessions in candidate leases and adopts a selected diff."""
 
+    async def _candidate_source_state(self) -> tuple[str | None, str]:
+        read_revision = getattr(self._candidate_workspace, "source_revision", None)
+        revision = await read_revision() if callable(read_revision) else None
+        return revision, await self._candidate_workspace.source_diff()
+
     async def candidate_agent(
         self,
         prompt: str,
@@ -197,7 +203,7 @@ class WorkflowCandidatesMixin:
         selected_tools = list(tools or ())
 
         async def run() -> CandidateRun:
-            source_before = await self._candidate_workspace.source_diff()
+            source_before = await self._candidate_source_state()
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             token = None
@@ -247,14 +253,14 @@ class WorkflowCandidatesMixin:
                     failure.__cause__ = exc
                     raise failure
                 try:
-                    source_after = await self._candidate_workspace.source_diff()
+                    source_after = await self._candidate_source_state()
                 except asyncio.CancelledError:
                     preserve_lease = True
                     raise
                 except Exception as exc:
                     failure = CandidateWorkspaceTrackingError(
                         f"candidate patch was captured, but could not verify source "
-                        f"worktree after candidate {label}; worktree preserved at "
+                        f"worktree state after candidate {label}; worktree preserved at "
                         f"{lease.candidate_workspace}"
                     )
                     failure.__cause__ = exc
@@ -273,6 +279,7 @@ class WorkflowCandidatesMixin:
                     diff=diff,
                     test_records=records,
                     verified_targets=targets,
+                    source_revision=source_before[0],
                 )
             except BaseException as exc:
                 failure = exc
@@ -334,7 +341,7 @@ class WorkflowCandidatesMixin:
             raise TypeError("candidate workflow args must be a dict")
 
         async def run() -> CandidateRun:
-            source_before = await self._candidate_workspace.source_diff()
+            source_before = await self._candidate_source_state()
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             child = None
@@ -388,14 +395,14 @@ class WorkflowCandidatesMixin:
                     failure.__cause__ = exc
                     raise failure
                 try:
-                    source_after = await self._candidate_workspace.source_diff()
+                    source_after = await self._candidate_source_state()
                 except asyncio.CancelledError:
                     preserve_lease = True
                     raise
                 except Exception as exc:
                     failure = CandidateWorkspaceTrackingError(
                         f"candidate patch was captured, but could not verify source "
-                        f"worktree after candidate workflow {label}; worktree preserved at "
+                        f"worktree state after candidate workflow {label}; worktree preserved at "
                         f"{lease.candidate_workspace}"
                     )
                     failure.__cause__ = exc
@@ -413,6 +420,7 @@ class WorkflowCandidatesMixin:
                     diff=diff,
                     test_records=(),
                     verified_targets=(),
+                    source_revision=source_before[0],
                 )
             except BaseException as exc:
                 failure = exc
@@ -489,6 +497,15 @@ class WorkflowCandidatesMixin:
             raise RuntimeError("candidate workspaces are not available")
         if not isinstance(candidate, CandidateRun):
             raise TypeError("candidate must be a CandidateRun")
+        read_revision = getattr(self._candidate_workspace, "source_revision", None)
+        if (
+            candidate.source_revision is not None
+            and callable(read_revision)
+            and await read_revision() != candidate.source_revision
+        ):
+            raise CandidateWorkspaceTrackingError(
+                f"source worktree changed before candidate adoption {candidate.label}"
+            )
         adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
         if callable(adopt_run):
             # Full-environment backends must retain the chosen candidate's

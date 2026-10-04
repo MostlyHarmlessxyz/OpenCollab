@@ -16,6 +16,7 @@ from typing import Any
 
 from opencollab.adapters._env_base import TextFileRange
 from opencollab.adapters.tools._output import require_positive_int, truncate
+from opencollab.adapters.tools._parameters import integer_parameter
 from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.apply_patch_engine import (
     _MIXED_NEWLINES,
@@ -91,8 +92,8 @@ class FileReadTool(Tool):
         runtime: ToolRuntime,
     ) -> str:
         path = params["path"]
-        offset = params.get("offset", 1)
-        limit = params.get("limit", 500)
+        offset = integer_parameter(params.get("offset", 1), "offset")
+        limit = integer_parameter(params.get("limit", 500), "limit")
         env = runtime.environment
 
         if env is None:

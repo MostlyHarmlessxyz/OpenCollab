@@ -25,9 +25,9 @@ def agent(tools=()):
 
 
 class DelayedClient(FakeLLMClient):
-    async def complete(self, **kwargs):
+    async def complete(self, messages, tools=None, temperature=0.0):
         await asyncio.sleep(0.03)
-        return await super().complete(**kwargs)
+        return await super().complete(messages, tools=tools, temperature=temperature)
 
 
 class ChildClient:

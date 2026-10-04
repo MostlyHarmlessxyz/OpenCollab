@@ -47,7 +47,8 @@ from opencollab.application.ports import (
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
 )
-from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEMENT_OFF
+from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE as DEFAULT_COMMIT_RESERVE
+from opencollab.application.session_run import ENFORCEMENT_OFF
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
 from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
@@ -501,7 +502,7 @@ class WorkflowContext(
         over_budget_ok: bool = False,
         budget: int | None = None,
         enforcement_strength: str = ENFORCEMENT_OFF,
-        commit_reserve: int = DEFAULT_COMMIT_RESERVE,
+        commit_reserve: int | None = None,
         harvest_fallback: str | None = None,
     ) -> str | dict | None:
         """Run one one-shot session and return its final assistant text.
@@ -542,6 +543,11 @@ class WorkflowContext(
         ``ctx.seconds_left()`` so a near-deadline forced write is cancelled in a
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
+
+        ``commit_reserve=None`` uses the default 25,000-token enforcement
+        reserve. If the approved session budget is smaller, the default becomes
+        one quarter of that budget, with a minimum of one token. An explicit
+        reserve is validated against the approved session budget unchanged.
         """
         self._raise_if_environment_revoked()
         supplied_tool_names = [

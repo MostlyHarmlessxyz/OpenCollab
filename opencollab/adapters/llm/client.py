@@ -68,7 +68,7 @@ class LLMClient:
         wire_protocol: str = "chat_completions",
         max_retries: int = 3,
         request_timeout: float | None = 600.0,
-        connect_timeout: float = 30.0,
+        connect_timeout: float | None = 30.0,
         first_event_timeout: float | None = 180.0,
         stream_idle_timeout: float | None = 180.0,
         context_window: int | None = None,
@@ -128,7 +128,7 @@ class LLMClient:
             self.base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
             anthropic_kwargs: dict[str, Any] = {
                 "api_key": api_key or os.environ.get("ANTHROPIC_API_KEY"),
-                "timeout": request_timeout,
+                "timeout": anthropic.Timeout(request_timeout, connect=connect_timeout),
                 "max_retries": 0,
             }
             if self.base_url:

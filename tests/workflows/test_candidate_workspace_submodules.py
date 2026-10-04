@@ -105,7 +105,7 @@ async def test_candidate_from_repository_subdirectory_initializes_only_scoped_su
     lease = None
     try:
         lease = await EnvCandidateWorkspace(base).acquire("nested-source")
-        assert await lease.environment.read_file("src/vendor/required/source.py") == "value = 1\n"
+        assert await lease.environment.read_file("vendor/required/source.py") == "value = 1\n"
         optional = Path(lease.candidate_workspace) / "vendor/outside"
         assert optional.is_dir() and list(optional.iterdir()) == []
     finally:

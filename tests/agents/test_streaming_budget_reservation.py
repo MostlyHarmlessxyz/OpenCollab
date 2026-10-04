@@ -149,6 +149,37 @@ def test_responses_precedence_keeps_system_and_tool_payloads_ahead_of_native_ite
     )
 
 
+@pytest.mark.parametrize("native_replay", ["absent", "empty", "present"])
+def test_responses_developer_precedence_matches_adapter_replay_order(native_replay):
+    from opencollab.adapters.llm.responses_provider import _messages_to_input
+
+    native = {"type": "reasoning", "id": "rs_1", "encrypted_content": "cipher", "summary": []}
+    developer = {"role": "developer", "content": "developer content" * 1_000}
+    if native_replay != "absent":
+        developer["response_items"] = [native] if native_replay == "present" else []
+
+    instructions, items = _messages_to_input([developer])
+    estimated = estimate_request_message_tokens([developer], prefer_response_items=True)
+    if native_replay == "present":
+        assert instructions is None
+        assert items == [native]
+        assert estimated == estimate_request_message_tokens(
+            [{"role": "developer", "response_items": [native]}],
+            prefer_response_items=True,
+        )
+    elif native_replay == "empty":
+        assert instructions is None
+        assert items == []
+        assert estimated == estimate_request_message_tokens(
+            [{"role": "developer", "response_items": []}],
+            prefer_response_items=True,
+        )
+    else:
+        assert instructions is None
+        assert items == [{"role": "developer", "content": developer["content"]}]
+        assert estimated == estimate_request_message_tokens([developer])
+
+
 def test_chat_restore_with_empty_responses_items_counts_large_content():
     messages = [{"role": "assistant", "content": "c" * 60_000, "response_items": []}]
     content_only = [{"role": "assistant", "content": "c" * 60_000}]

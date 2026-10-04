@@ -17,6 +17,7 @@ import pytest
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.scheduler_types import LaunchSpec
+from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap import build_session as Session
@@ -127,6 +128,18 @@ def test_session_event_bus_reaches_injected_sink():
     run(session.event_bus.emit(event))
 
     assert seen == [event]
+
+
+def test_session_runtime_preserves_legacy_positional_optional_fields():
+    subscriber = AutoSaveSubscriber(lambda: None)
+    runtime = SessionRuntime(
+        object(), object(), object(), object(), object(), object(), None,
+        subscriber, True,
+    )
+
+    assert runtime.auto_save_subscriber is subscriber
+    assert runtime.owns_llm is True
+    assert runtime.run_id is None
 
 
 def test_session_with_auto_save_path_subscribes_autosave_subscriber(tmp_path):
@@ -429,7 +442,7 @@ def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path
     )
 
     checkpoint = store.load_snapshot(str(target), session.agent.system_prompt)
-    assert checkpoint["_autosave_sequence"] == 2
+    assert checkpoint["_autosave_sequence"] == 3
     assert checkpoint["messages"][-1]["content"] == "resume me"
 
     async def append_and_flush():
@@ -445,7 +458,7 @@ def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path
         llm=_FakeLLM(),
         store=store,
     )
-    assert restored._auto_save_sequence == 3
+    assert restored._auto_save_sequence == 4
     assert restored.messages[-1]["content"] == "continue here"
 
 
@@ -459,7 +472,7 @@ def test_relative_save_alias_uses_autosave_checkpoint(tmp_path, monkeypatch):
     session.save("alias.json")
 
     saved = json.loads(target.read_text())
-    assert saved["_autosave_sequence"] == 4
+    assert saved["_autosave_sequence"] == 5
     assert (tmp_path / "alias.json.journal").read_bytes() == b""
 
 
