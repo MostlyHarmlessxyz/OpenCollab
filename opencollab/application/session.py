@@ -601,6 +601,12 @@ class Session:
             if restored.phase is SessionPhase.AWAITING_EVENTS
             else None
         )
+        submitted_summary = raw_state.get("submitted_summary")
+        restored.submitted_summary = (
+            submitted_summary
+            if restored.phase is SessionPhase.AWAITING_EVENTS and isinstance(submitted_summary, str)
+            else None
+        )
         restored.terminal_reason = (
             str(raw_state["terminal_reason"])
             if restored.phase.is_terminal()
@@ -789,6 +795,7 @@ class Session:
                 ),
                 "active_turn_start_message_index": self.state.active_turn_start_message_index,
                 "pending_step_latency": self.state.pending_step_latency,
+                "submitted_summary": self.state.submitted_summary,
             },
         }
         if self.state.step_count != self._loop_checkpoint_step or self.state.phase in {

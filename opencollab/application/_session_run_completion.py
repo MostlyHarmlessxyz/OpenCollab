@@ -155,7 +155,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     def _record_submission(self, result: Any) -> None:
         """Remember that this step called ``submit``, and with what."""
         if getattr(result, "turn_submitted", False):
-            self._submitted_summary = getattr(result, "submitted_summary", None) or ""
+            self.state.submitted_summary = getattr(result, "submitted_summary", None) or ""
 
     async def autosave_pending_step(self) -> None:
         """Emit step_end (the autosave trigger), then PRECHECK -- or DONE.
@@ -173,14 +173,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if pending is not None
             else (self.state.pending_step_latency or 0.0)
         )
-        submitted = self._submitted_summary
+        submitted = self.state.submitted_summary
         if submitted is not None:
             self.state.append_message({"role": "assistant", "content": submitted})
         await self.finish_step(latency)
         self.clear_pending_step()
         self._ensure_tool_environment_active()
         if submitted is not None:
-            self._submitted_summary = None
+            self.state.submitted_summary = None
             self.state.transition_to(SessionPhase.DONE, reason="submitted")
             return
         self.state.transition_to(SessionPhase.PRECHECK)
