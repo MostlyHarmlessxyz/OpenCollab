@@ -29,6 +29,53 @@ def _positive_usage_int(source: Any, key: str) -> int | None:
     return value if value is not None and value > 0 else None
 
 
+def _reported_responses_usage(response: Any) -> Usage | None:
+    """Retain only counters actually returned by a failed attempt."""
+    raw = usage_to_dict(getattr(response, "usage", None))
+    input_tokens = _optional_usage_int(raw, "input_tokens")
+    output_tokens = _optional_usage_int(raw, "output_tokens")
+    if input_tokens is None and output_tokens is None:
+        return None
+    input_details = raw.get("input_tokens_details") or {}
+    output_details = raw.get("output_tokens_details") or {}
+    cache_creation = _optional_usage_int(input_details, "cache_write_tokens")
+    if cache_creation is None:
+        cache_creation = _optional_usage_int(raw, "cache_write_tokens")
+    return Usage(
+        input_tokens=input_tokens or 0,
+        output_tokens=output_tokens or 0,
+        cache_read_tokens=_optional_usage_int(input_details, "cached_tokens"),
+        cache_creation_tokens=cache_creation,
+        reasoning_tokens=_optional_usage_int(output_details, "reasoning_tokens"),
+        estimated=input_tokens is None or output_tokens is None,
+        raw_usage=raw,
+    )
+
+
+def _combine_responses_usage(attempts: list[Usage | None]) -> Usage | None:
+    """Sum known attempts and retain omissions in the native usage record."""
+    known = [usage for usage in attempts if usage is not None]
+    if not known:
+        return None
+    if len(attempts) == 1:
+        return known[0]
+
+    def optional_total(name: str) -> int | None:
+        values = [getattr(usage, name) if usage is not None else None for usage in attempts]
+        return None if any(value is None for value in values) else sum(values)
+
+    return Usage(
+        input_tokens=sum(usage.input_tokens for usage in known),
+        output_tokens=sum(usage.output_tokens for usage in known),
+        cache_read_tokens=optional_total("cache_read_tokens"),
+        cache_creation_tokens=optional_total("cache_creation_tokens"),
+        reasoning_tokens=optional_total("reasoning_tokens"),
+        estimated=any(usage is None or usage.estimated for usage in attempts),
+        raw_usage={"attempts": [usage.raw_usage if usage is not None else None for usage in attempts]},
+        context_tokens=known[-1].context_tokens if known[-1].context_tokens is not None else known[-1].input_tokens,
+    )
+
+
 def parse_responses_usage(
     response: Any,
     messages: list[dict[str, Any]],

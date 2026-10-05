@@ -189,7 +189,9 @@ def build_usage_record(
     error: BaseException | None = None,
     transport_timing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    usage = response.usage if response is not None else Usage()
+    usage = response.usage if response is not None else getattr(error, "usage", None)
+    if usage is None:
+        usage = Usage(estimated=error is not None, cache_read_tokens=None, cache_creation_tokens=None)
     record: dict[str, Any] = {
         "schema": "opencollab.api_usage.v1",
         "timestamp": time.time(),

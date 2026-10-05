@@ -47,7 +47,11 @@ from opencollab.adapters.llm.responses_structured import (
     forced_text_tool,
     project_forced_text_tool,
 )
-from opencollab.adapters.llm.responses_usage import parse_responses_usage
+from opencollab.adapters.llm.responses_usage import (
+    _combine_responses_usage,
+    _reported_responses_usage,
+    parse_responses_usage,
+)
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
     normalize_function_tools,
@@ -57,6 +61,7 @@ from opencollab.adapters.llm.tool_contracts import (
 from opencollab.adapters.llm.types import (
     LLMResponse,
     ModelCapabilities,
+    Usage,
     model_capabilities,
     rescue_empty_turn,
     responses_sampling_supported,
@@ -351,6 +356,7 @@ def _validate_terminal_response(
 def _handle_event(event: Any, state: _StreamState, expected_model: str | None = None) -> bool:
     event_type = _event_type(event)
     if event_type in {"error", "response.failed"}:
+        state.completed_response = getattr(event, "response", None)
         _raise_response_error(_event_error_data(event))
     if event_type == "response.incomplete":
         response = getattr(event, "response", None)
@@ -396,6 +402,23 @@ async def _consume_stream(
     expected_model: str | None = None,
 ) -> _StreamState:
     state = _StreamState()
+    try:
+        await _drain_stream(stream, state, first_event_timeout, idle_timeout, expected_model)
+    except BaseException as exc:
+        usage = _reported_responses_usage(state.completed_response)
+        if usage is not None:
+            exc.usage = usage
+        raise
+    return state
+
+
+async def _drain_stream(
+    stream: Any,
+    state: _StreamState,
+    first_event_timeout: float | None,
+    idle_timeout: float | None,
+    expected_model: str | None,
+) -> None:
     # OpenAI AsyncStream already owns its response-closing iterator and also
     # exposes a wrapper-style __aiter__ async generator.  Iterating the stream
     # directly avoids leaving that outer generator for interpreter shutdown,
@@ -433,7 +456,6 @@ async def _consume_stream(
         if not covered:
             raise ResponsesProtocolError("Responses stream ended with incomplete tool arguments")
         state.argument_fragments.clear()
-    return state
 
 
 async def _create_and_consume_stream(
@@ -649,36 +671,39 @@ async def complete_responses(
     )
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming
+    failed_usages: list[Usage | None] = []
 
     async def request_once() -> LLMResponse:
-        if not stream:
-            kwargs["stream"] = False
-            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
-            response = await client.responses.create(**kwargs)
-            _check_instructions_echo(response, kwargs)
-            return parse_responses_response(
-                response,
-                messages,
-                expected_model=model,
-                forced_text_tool=forced_text_tool,
-                tools=converted_tools,
-            )
+        terminal = None
+        try:
+            if not stream:
+                kwargs["stream"] = False
+                begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
+                terminal = await client.responses.create(**kwargs)
+                _check_instructions_echo(terminal, kwargs)
+                return parse_responses_response(
+                    terminal,
+                    messages,
+                    expected_model=model,
+                    forced_text_tool=forced_text_tool,
+                    tools=converted_tools,
+                )
 
-        state = await _create_and_consume_stream(
-            client,
-            kwargs,
-            first_event_timeout,
-            stream_idle_timeout,
-            model,
-        )
-        _check_instructions_echo(state.completed_response, kwargs)
-        return _parse_stream(
-            state,
-            messages,
-            model,
-            forced_text_tool,
-            converted_tools,
-        )
+            state = await _create_and_consume_stream(
+                client, kwargs, first_event_timeout, stream_idle_timeout, model,
+            )
+            terminal = state.completed_response
+            _check_instructions_echo(terminal, kwargs)
+            return _parse_stream(
+                state,
+                messages,
+                model,
+                forced_text_tool,
+                converted_tools,
+            )
+        except BaseException as exc:
+            failed_usages.append(_reported_responses_usage(terminal) or getattr(exc, "usage", None))
+            raise
 
     if retry_budget is not None:
 
@@ -690,18 +715,26 @@ async def complete_responses(
             except asyncio.TimeoutError as exc:
                 raise TransientProviderError(f"Responses request timeout after {round_timeout:g}s") from exc
 
-        return await with_retry(
-            bounded_request_once,
-            max_retries=retry_limit,
-            retry_time_budget=retry_budget,
-        )
-
     async def run() -> LLMResponse:
+        if retry_budget is not None:
+            return await with_retry(
+                bounded_request_once, max_retries=retry_limit, retry_time_budget=retry_budget,
+            )
         return await with_retry(request_once, max_retries=retry_limit)
 
     try:
-        if round_timeout is None:
-            return await run()
-        return await asyncio.wait_for(run(), timeout=round_timeout)
-    except asyncio.TimeoutError as exc:
-        raise ResponsesProtocolError(f"Responses round deadline exceeded after {round_timeout:g}s") from exc
+        try:
+            if round_timeout is None or retry_budget is not None:
+                response = await run()
+            else:
+                response = await asyncio.wait_for(run(), timeout=round_timeout)
+        except asyncio.TimeoutError as exc:
+            raise ResponsesProtocolError(f"Responses round deadline exceeded after {round_timeout:g}s") from exc
+    except BaseException as exc:
+        usage = _combine_responses_usage(failed_usages)
+        if usage is not None:
+            exc.usage = usage
+        raise
+    if failed_usages:
+        response.usage = _combine_responses_usage([*failed_usages, response.usage])
+    return response
