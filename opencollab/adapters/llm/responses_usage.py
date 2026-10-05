@@ -4,24 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.adapters.llm._attempt_usage import (  # noqa: F401 - compatibility re-export
+    _combine_attempt_usage as _combine_responses_usage,
+)
+from opencollab.adapters.llm._attempt_usage import _optional_usage_int
 from opencollab.adapters.llm.types import (
     Usage,
     estimate_messages_tokens,
     estimate_tokens,
     usage_to_dict,
 )
-
-
-def _optional_usage_int(source: Any, key: str) -> int | None:
-    if not isinstance(source, dict) or source.get(key) is None:
-        return None
-    if isinstance(source[key], bool):
-        return None
-    try:
-        value = int(source[key])
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return value if value >= 0 else None
 
 
 def _positive_usage_int(source: Any, key: str) -> int | None:
@@ -49,30 +41,6 @@ def _reported_responses_usage(response: Any) -> Usage | None:
         reasoning_tokens=_optional_usage_int(output_details, "reasoning_tokens"),
         estimated=input_tokens is None or output_tokens is None,
         raw_usage=raw,
-    )
-
-
-def _combine_responses_usage(attempts: list[Usage | None]) -> Usage | None:
-    """Sum known attempts and retain omissions in the native usage record."""
-    known = [usage for usage in attempts if usage is not None]
-    if not known:
-        return None
-    if len(attempts) == 1:
-        return known[0]
-
-    def optional_total(name: str) -> int | None:
-        values = [getattr(usage, name) if usage is not None else None for usage in attempts]
-        return None if any(value is None for value in values) else sum(values)
-
-    return Usage(
-        input_tokens=sum(usage.input_tokens for usage in known),
-        output_tokens=sum(usage.output_tokens for usage in known),
-        cache_read_tokens=optional_total("cache_read_tokens"),
-        cache_creation_tokens=optional_total("cache_creation_tokens"),
-        reasoning_tokens=optional_total("reasoning_tokens"),
-        estimated=any(usage is None or usage.estimated for usage in attempts),
-        raw_usage={"attempts": [usage.raw_usage if usage is not None else None for usage in attempts]},
-        context_tokens=known[-1].context_tokens if known[-1].context_tokens is not None else known[-1].input_tokens,
     )
 
 
