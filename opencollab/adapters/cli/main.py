@@ -95,6 +95,19 @@ def main_callback(
 ):
     """Interactive team. Agent 0 starts the session and can spawn child agents."""
     if ctx.invoked_subcommand is not None:
+        explicit_options = [
+            parameter.opts[0]
+            for parameter in ctx.command.params
+            if parameter.name is not None
+            and (source := ctx.get_parameter_source(parameter.name)) is not None
+            and source.name == "COMMANDLINE"
+        ]
+        if explicit_options:
+            raise typer.BadParameter(
+                f"Interactive team options {', '.join(explicit_options)} were supplied before "
+                f"{ctx.invoked_subcommand}. Place shared workflow options after "
+                "'workflow run NAME' or 'workflow list'."
+            )
         return
 
     one_shot = _resolve_one_shot_prompt(prompt, prompt_file)
