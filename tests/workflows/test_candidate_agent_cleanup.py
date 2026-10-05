@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
+from pathlib import Path
 
 import httpx
 import openai
 import pytest
 
 from opencollab import OpenCollab
-from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
+from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace, _CandidateLease
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.client import LLMClient
+from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow import WorkflowContext
 from opencollab.bootstrap import _workflow_runtime_session as runtime
+from opencollab.tools import evidence_tools
 from tests.support.workflow_context_test_support import FakeFactory, FakeSession
 
 
@@ -140,6 +145,135 @@ async def test_public_candidate_waits_for_session_subscriber_write(repository, p
     assert len(provider_calls) == 1
     assert context.tokens_remaining() == 99_985
     assert (repository / "source.txt").read_text() == "initial\n"
+
+
+@pytest.mark.parametrize("kind", ["ordinary", "candidate_agent", "candidate_workflow"])
+@pytest.mark.parametrize("background", [False, True])
+async def test_public_workflow_waits_through_candidate_capture(repository, monkeypatch, kind, background):
+    started, release_model = asyncio.Event(), asyncio.Event()
+    capturing, release_capture = asyncio.Event(), asyncio.Event()
+    holder, sessions = {}, []
+    original_build, original_diff = runtime.build_session, _CandidateLease.diff
+
+    async def complete(llm, messages, **kwargs):
+        if not any(message.get("role") == "tool" for message in messages):
+            return LLMResponse(tool_calls=[{
+                "id": "write", "type": "function", "function": {
+                    "name": "file_write", "arguments": json.dumps({
+                        "path": "source.txt", "mode": "create", "content": "generated candidate work\n",
+                    }),
+                },
+            }], finish_reason="tool_calls", usage=Usage(10, 5))
+        started.set()
+        await release_model.wait()
+        return LLMResponse(content="done", usage=Usage(10, 5))
+
+    def build(**kwargs):
+        session = original_build(**kwargs)
+        sessions.append(session)
+        return session
+
+    async def diff(lease, *args, **kwargs):
+        capturing.set()
+        await release_capture.wait()
+        return await original_diff(lease, *args, **kwargs)
+
+    monkeypatch.setattr(LLMClient, "complete", complete)
+    monkeypatch.setattr(runtime, "build_session", build)
+    monkeypatch.setattr(_CandidateLease, "diff", diff)
+
+    async def child(ctx, _args):
+        return await ctx.agent("write", tools=evidence_tools("file_write"))
+
+    async def workflow(ctx, _args):
+        holder["context"] = ctx
+        if kind == "ordinary":
+            operation = child(ctx, {})
+        elif kind == "candidate_agent":
+            operation = ctx.candidate_agent("write", label="candidate", tools=evidence_tools("file_write"))
+        else:
+            operation = ctx.candidate_workflow(child, {}, label="candidate")
+
+        async def collect():
+            holder["value"] = await operation
+
+        if background:
+            holder["background"] = asyncio.create_task(collect())
+            await started.wait()
+        else:
+            await collect()
+        return "workflow returned"
+
+    task = asyncio.create_task(_client(repository).workflow(
+        workflow, budget=1000, timeout=None, trace=False, cleanup_timeout=5,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await asyncio.sleep(0.02)
+        assert Path(sessions[0].env.workspace, "source.txt").read_text() == "generated candidate work\n"
+        assert not task.done(), "runtime finished while the model was still executing"
+        release_model.set()
+        if kind != "ordinary":
+            await asyncio.wait_for(capturing.wait(), timeout=5)
+            await asyncio.sleep(0.02)
+            assert not task.done(), "runtime finished before the candidate diff was captured"
+        release_capture.set()
+        result = await asyncio.wait_for(task, timeout=5)
+        if background:
+            await holder["background"]
+        assert result.ok, result.reason
+        assert result.output == "workflow returned"
+        assert result.tokens == 30
+        assert len(holder["context"].sessions) == 1
+        assert holder["context"].pending_cleanup_tasks == ()
+        if kind == "ordinary":
+            assert holder["value"] == "done"
+        else:
+            assert holder["value"].output == "done"
+            assert "+generated candidate work" in holder["value"].diff
+            assert holder["value"].lifecycle_errors == ()
+            assert (repository / "source.txt").read_text() == "initial\n"
+            assert not Path(sessions[0].env.workspace).exists()
+    finally:
+        release_model.set()
+        release_capture.set()
+        await asyncio.gather(task, *([holder["background"]] if "background" in holder else []), return_exceptions=True)
+        for session in sessions:
+            await session.aclose()
+            if session.env.workspace != str(repository):
+                await session.env.cleanup()
+                if Path(session.env.workspace).exists():
+                    subprocess.run(["git", "worktree", "remove", "--force", "--", session.env.workspace],
+                                   cwd=repository, check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("kind", ["ordinary", "draft_findings", "candidate_agent", "candidate_workflow"])
+async def test_nested_candidate_preserves_outer_call_ownership(repository, kind):
+    parent = WorkflowContext(
+        FakeFactory([FakeSession(reply="done")]), budget_total=100,
+        candidate_workspace=EnvCandidateWorkspace(LocalEnvironment(str(repository))),
+    )
+
+    async def inner(child, _args):
+        return await child.agent("inner")
+
+    async def outer(_child, _args):
+        if kind == "ordinary":
+            output = await parent.agent("read source for candidate preparation", budget=10)
+        elif kind == "draft_findings":
+            assert await parent.draft_findings("read source for candidate preparation", budget=10) is None
+            output = "done"
+        elif kind == "candidate_agent":
+            output = (await parent.candidate_agent("inner", label="inner", budget=10)).output
+        else:
+            output = (await parent.candidate_workflow(inner, {}, label="inner", budget=10)).output
+        assert asyncio.current_task() in parent._active_call_tasks
+        return output
+
+    candidate = await parent.candidate_workflow(outer, {}, label="outer", budget=50)
+    assert candidate.output == "done"
+    assert parent.agent_failures == ()
+    assert parent._active_call_tasks == set()
 
 
 @pytest.mark.parametrize("ending", ["timeout", "cancel", "cancel-twice"])
