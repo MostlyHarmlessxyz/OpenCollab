@@ -208,6 +208,10 @@ def _parse_response(
     if not isinstance(reasoning, str) or not reasoning:
         reasoning = None
 
+    usage_message = message
+    if reasoning is not None:
+        usage_message = {**to_plain_data(message), "reasoning_content": reasoning}
+
     return _build_chat_response(
         message.content,
         reasoning,
@@ -215,7 +219,7 @@ def _parse_response(
         choice.finish_reason,
         _clean_provider_model(getattr(resp, "model", None)),
         usage_source=resp,
-        usage_message=message,
+        usage_message=usage_message,
         request_messages=request_messages,
         tools=tools,
         refusal=getattr(message, "refusal", None),
