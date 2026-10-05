@@ -613,6 +613,12 @@ class MessagingMixin:
             self._autosave_session(aid)
         if not inbox:
             return events
+        # An external turn can already own the append while its driver does
+        # not exist yet. Keep accepted messages queued until that append and
+        # the following turn finish, just as for an existing driver.
+        delivery = self._message_delivery_tasks.get(aid)
+        if delivery is not None and not delivery.done():
+            return events
         task = self._tasks.get(aid)
         current_task = asyncio.current_task()
         if (
