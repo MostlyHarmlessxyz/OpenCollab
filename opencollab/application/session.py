@@ -122,6 +122,7 @@ class Session:
         # runtime was built with.
         self.tracer = self._tracer
         self._auto_save_subscriber = runtime.auto_save_subscriber
+        self.runner.late_provider_usage_checkpoint = self.enqueue_auto_save
         self._owns_llm = runtime.owns_llm
         self._llm_closed = False
         self._llm_close_error: BaseException | None = None

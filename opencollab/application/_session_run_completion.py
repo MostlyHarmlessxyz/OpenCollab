@@ -24,7 +24,7 @@ from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application._session_run_usage import _normalize_completion_usage
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
-from opencollab.application.ports import CompletionResponse, RequestTokenEstimatorPort
+from opencollab.application.ports import CompletionResponse, RequestOutputRequirementPort, RequestTokenEstimatorPort
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.steering import (
     build_steering_block,
@@ -598,6 +598,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             DEFAULT_MAX_TOKENS_PER_STEP,
         )
         max_output_tokens = max(1, int(configured_output_tokens))
+        minimum_output_tokens = 1
+        if isinstance(self.llm, RequestOutputRequirementPort):
+            minimum_output_tokens = self.llm.minimum_output_tokens(
+                max_output_tokens=max_output_tokens,
+                thinking=thinking,
+                thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+            )
         if self.max_budget_tokens is not None:
             remaining_budget = int(self.max_budget_tokens) - int(
                 self.state.used_tokens
@@ -615,10 +622,11 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             else:
                 reserved_input_tokens = estimate_request_tokens(messages, tools)
             output_budget = remaining_budget - reserved_input_tokens
-            if output_budget < 1:
+            if output_budget < minimum_output_tokens:
                 raise _TokenBudgetStop(
                     reserved_input_tokens=reserved_input_tokens,
                     remaining_budget=remaining_budget,
+                    minimum_output_tokens=minimum_output_tokens,
                 )
             max_output_tokens = min(max_output_tokens, output_budget)
         return max_output_tokens
@@ -666,6 +674,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self.state.set_context_tokens(input_tokens)
             if abandoned:
                 self._late_provider_usage += (total_tokens,)
+                if self.late_provider_usage_checkpoint is not None:
+                    self.late_provider_usage_checkpoint()
             self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
 
         async def complete_owned() -> CompletionResponse:

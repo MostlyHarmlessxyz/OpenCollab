@@ -139,9 +139,13 @@ def test_anthropic_mythos_preview_still_accepts_manual_thinking():
     assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
 
 
-def test_anthropic_modern_models_omit_sampling_without_explicit_thinking():
+@pytest.mark.parametrize("model", [
+    "gateway/claude-opus-4-8-20260801", "claude-opus-4-7-20260416",
+    "claude-sonnet-4-12-20260801", "claude-sonnet-5-20260801",
+])
+def test_anthropic_modern_models_omit_sampling_without_explicit_thinking(model):
     kwargs = build_anthropic_kwargs(
-        "gateway/claude-opus-4-8-20260801",
+        model,
         [{"role": "user", "content": "solve"}],
         None,
         0.2,
@@ -152,10 +156,14 @@ def test_anthropic_modern_models_omit_sampling_without_explicit_thinking():
     assert "top_p" not in kwargs
 
 
-def test_anthropic_modern_models_reject_non_default_top_p():
+@pytest.mark.parametrize("model", [
+    "claude-sonnet-5", "claude-sonnet-5-20260801",
+    "claude-opus-4-7-20260416", "claude-sonnet-4-12-20260801",
+])
+def test_anthropic_modern_models_reject_non_default_top_p(model):
     with pytest.raises(ValueError, match="provider-default top_p"):
         build_anthropic_kwargs(
-            "claude-sonnet-5",
+            model,
             [{"role": "user", "content": "solve"}],
             None,
             0.2,
@@ -165,7 +173,10 @@ def test_anthropic_modern_models_reject_non_default_top_p():
 
 @pytest.mark.parametrize(
     "model",
-    ["claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5"],
+    [
+        "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5",
+        "claude-opus-4-7-20260416", "claude-sonnet-4-12-20260801", "claude-sonnet-5-20260801",
+    ],
 )
 def test_anthropic_adaptive_only_models_reject_manual_thinking(model):
     with pytest.raises(ValueError, match="requires adaptive thinking"):
@@ -182,7 +193,11 @@ def test_anthropic_adaptive_only_models_reject_manual_thinking(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+    [
+        "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5",
+        "claude-sonnet-4", "claude-opus-4", "claude-sonnet-4-20250514", "claude-opus-4-20250514",
+        "gateway/claude-sonnet-4-20250514", "claude-sonnet-4-5-20250929",
+    ],
 )
 def test_anthropic_manual_only_models_reject_adaptive_thinking(model):
     with pytest.raises(ValueError, match="does not support adaptive thinking"):

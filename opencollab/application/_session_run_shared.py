@@ -29,11 +29,12 @@ class _TeamBudgetStop(Exception):
 
 
 class _TokenBudgetStop(Exception):
-    """Internal signal that a request has no reserved output headroom."""
+    """Internal signal that a request has insufficient legal output headroom."""
 
-    def __init__(self, *, reserved_input_tokens: int, remaining_budget: int) -> None:
+    def __init__(self, *, reserved_input_tokens: int, remaining_budget: int, minimum_output_tokens: int = 1) -> None:
         self.reserved_input_tokens = reserved_input_tokens
         self.remaining_budget = remaining_budget
+        self.minimum_output_tokens = minimum_output_tokens
         super().__init__(
             "conservative input reservation requires "
             f"{reserved_input_tokens} of {remaining_budget} remaining tokens"

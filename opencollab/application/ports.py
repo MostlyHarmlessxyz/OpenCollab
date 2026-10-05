@@ -491,6 +491,25 @@ class RequestTokenEstimatorPort(Protocol):
         ...
 
 
+@runtime_checkable
+class RequestOutputRequirementPort(Protocol):
+    """Optional output floor for a valid configured provider request."""
+
+    def minimum_output_tokens(
+        self,
+        *,
+        max_output_tokens: int,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
+        """Validate the configured limit and return its legal output floor.
+
+        Called before the session budget reduces ``max_output_tokens``.
+        Invalid configuration raises its ordinary configuration error.
+        """
+        ...
+
+
 class SessionStorePort(Protocol):
     """Message persistence surface (structured JSON per agent)."""
 

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import openai
 
-from opencollab.adapters.llm.anthropic_provider import complete_anthropic
+from opencollab.adapters.llm.anthropic_provider import _minimum_output_tokens, complete_anthropic
 from opencollab.adapters.llm.first_token import recording
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs, complete_openai
 from opencollab.adapters.llm.providers import (
@@ -198,6 +198,21 @@ class LLMClient:
     def context_window(self) -> int | None:
         """The model's context window in tokens, or ``None`` if unknown."""
         return self._context_window or model_context_window(self.model)
+
+    def minimum_output_tokens(
+        self,
+        *,
+        max_output_tokens: int,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
+        """Output needed to issue a valid request with the configured thinking."""
+        if self._anthropic:
+            return _minimum_output_tokens(
+                self.model, max_output_tokens=max_output_tokens,
+                thinking=thinking, thinking_params=thinking_params,
+            )
+        return 1
 
     async def complete(
         self,
