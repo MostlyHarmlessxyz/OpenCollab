@@ -36,6 +36,8 @@ _ANTHROPIC_VERSION_RE = re.compile(
 
 def _anthropic_model_version(model: str) -> tuple[str, int, int] | None:
     leaf = model.strip().lower().rsplit("/", 1)[-1]
+    # Strip the snapshot date before reading version components.
+    leaf = re.sub(r"-\d{8}$", "", leaf)
     match = _ANTHROPIC_VERSION_RE.match(leaf)
     if match is None:
         return None
