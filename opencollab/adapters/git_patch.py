@@ -143,6 +143,7 @@ def guarded_staged_diff_command(
         f"{resets}"
         f"{reserved_guard}"
         f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary '
+        '--no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ '
         f"{shlex.quote(base_revision)}"
     )
 
