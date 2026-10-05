@@ -53,3 +53,33 @@ async def test_exported_patch_applies_with_display_settings(tmp_path, monkeypatc
             assert git("config", "--get", key).stdout.strip() == value
     finally:
         await env.cleanup()
+
+
+@pytest.mark.parametrize("binary", [False, True])
+async def test_directory_copy_rename_exports_an_applicable_patch(tmp_path, monkeypatch, binary):
+    source = tmp_path / "source"
+    source.mkdir()
+    before_name, after_name = "before name.txt", "after name.txt"
+    payload = b"\x00\xffrename payload\n" if binary else b"ordinary rename contents\n"
+    (source / before_name).write_bytes(payload)
+    config = tmp_path / "gitconfig"
+    config.write_text("[diff]\n\trenames = true\n")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    env = WorktreeEnvironment(str(source))
+    try:
+        await env.setup()
+        workspace = Path(env.workspace)
+        (workspace / before_name).rename(workspace / after_name)
+        patch = await env.get_diff()
+        assert env.workspace not in patch
+        assert "opencollab-cp-baseline-" not in patch
+        for arguments in [("apply", "--check", "-"), ("apply", "-")]:
+            subprocess.run(
+                ["git", "-C", str(source), *arguments], input=patch,
+                text=True, capture_output=True, check=True,
+            )
+        assert not (source / before_name).exists()
+        assert (source / after_name).read_bytes() == payload
+    finally:
+        await env.cleanup()

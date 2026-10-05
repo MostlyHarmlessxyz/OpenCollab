@@ -437,7 +437,7 @@ class WorktreeEnvironment(Environment):
         if self._copy_baseline_dir is None or self._worktree_dir is None:
             raise RuntimeError("non-Git worktree baseline is unavailable")
         command = (
-            "git diff --no-index --binary --no-ext-diff --no-color --unified=3 "
+            "git diff --no-index --no-renames --binary --no-ext-diff --no-color --unified=3 "
             "--src-prefix=a/ --dst-prefix=b/ -- "
             f"{shlex.quote(self._copy_baseline_dir)} {shlex.quote(self._worktree_dir)}"
         )
