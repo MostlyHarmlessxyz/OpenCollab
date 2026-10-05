@@ -226,3 +226,67 @@ async def test_message_tool_preserves_real_append_failure_and_queued_message(tmp
     finally:
         release.set()
         await scheduler.cleanup()
+
+
+async def test_restored_queued_request_accepts_teammate_messages_and_delivers_fifo_once(tmp_path):
+    from opencollab.adapters.storage import SessionStore
+    from opencollab.bootstrap import load_session
+    from opencollab.domain.agent import Agent
+
+    source_path = tmp_path / "accepted.json"
+    source = build_session(
+        agent=Agent(name="lead", system_prompt="Answer the request."), llm=_ReplyProvider(),
+        auto_save_path=str(source_path),
+    )
+    await source.add_user_message("old accepted request")
+    await asyncio.gather(*source.pending_cleanup_tasks)
+    durable = SessionStore().load_snapshot(str(source_path), source.agent.system_prompt)
+    assert durable["session_state"]["pending_external_user_turn"]["content"] == "old accepted request"
+
+    release = asyncio.Event()
+    scheduler = Scheduler(
+        session_factory=_MessageSessionFactory(release), worktree_pool=_PassiveWorktreePool(), event_sink=EventBus(),
+    )
+    provider = _ReplyProvider()
+    lead = load_session(
+        str(source_path), agent=source.agent, llm=provider,
+        auto_save_path=str(tmp_path / "restored.json"),
+    )
+    scheduler.register_lead(lead)
+    sender = await scheduler.spawn(0, "worker", "Prepare updates.")
+    try:
+        for content in ("first update", "second update"):
+            assert (await _message_tool_send(scheduler, sender, content)).startswith("Message queued to aid 0.")
+        assert provider.calls == []
+        assert _delivered_updates(lead.messages) == []
+        assert [message["message_content"] for message in lead.state.pending_user_messages] == [
+            "first update", "second update",
+        ]
+        await asyncio.gather(*lead.pending_cleanup_tasks)
+        queued = SessionStore().load_snapshot(lead.auto_save_path, lead.agent.system_prompt)
+        assert queued["session_state"]["pending_external_user_turn"]["content"] == "old accepted request"
+        assert [message["message_content"] for message in queued["pending_messages"]] == [
+            "first update", "second update",
+        ]
+
+        release.set()
+        assert await asyncio.wait_for(scheduler.run("new request"), 2) == "answer-3"
+        assert len(provider.calls) == 3
+        assert not _delivered_updates(provider.calls[0])
+        assert all(message.get("content") != "new request" for message in provider.calls[0])
+        delivered = _delivered_updates(lead.messages)
+        assert len(delivered) == 1
+        assert delivered[0].index("first update") < delivered[0].index("second update")
+        assert len(_delivered_updates(provider.calls[1])) == 1
+        assert any(message.get("content") == "answer-1" for message in provider.calls[1])
+        assert any(message.get("content") == "answer-2" for message in provider.calls[2])
+        assert all(message.get("content") != "new request" for message in provider.calls[1])
+        assert not lead.state.pending_user_messages
+        await scheduler.cleanup()
+        completed = SessionStore().load_snapshot(lead.auto_save_path, lead.agent.system_prompt)
+        assert _delivered_updates(completed["messages"]) == delivered
+        assert not completed.get("pending_messages")
+        assert completed["session_state"]["pending_external_user_turn"] is None
+    finally:
+        release.set()
+        await scheduler.cleanup()

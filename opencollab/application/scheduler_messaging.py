@@ -627,7 +627,11 @@ class MessagingMixin:
             and not (allow_current_task and task is current_task)
         ):
             return events
-        if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
+        if (
+            scb.state.phase is SessionPhase.AWAITING_EVENTS
+            or not scb.state.pending_events.is_empty()
+            or scb.state.pending_external_user_turn is not None
+        ):
             return events
         messages = self._bounded_message_batch(inbox)
         if not messages or self._shutting_down:
