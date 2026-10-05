@@ -94,7 +94,7 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
         for pattern in (
             rf"\b(?:{rejection})\s+(?:(?:value\s+for|parameter|field)\s*:?\s+)?"
             rf"{choice}\b",
-            rf"\b{choice}\b(?:\s+(?:parameter|field|value))?"
+            rf'\b{choice}\b(?:\s+(?:parameter|field|value)|\s*:\s*type "tool" and "any" are)?'
             rf"\s+(?:(?:is|was)\s+)?(?:{rejection})\b",
             rf"\b(?:does\s+not\s+support|doesn't\s+support|rejects?|rejected)"
             rf"\s+(?:the\s+)?{choice}\b",
