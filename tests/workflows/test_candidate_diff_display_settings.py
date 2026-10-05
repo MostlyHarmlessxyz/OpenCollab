@@ -48,3 +48,32 @@ async def test_candidate_preserves_delivery_with_display_settings(tmp_path, sett
             if Path(candidate_env.workspace).exists():
                 _git(repo, "worktree", "remove", "--force", candidate_env.workspace)
         await env.cleanup()
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_candidate_keeps_context_when_git_display_context_is_zero(tmp_path, dirty):
+    repo = _repository(tmp_path)
+    original = "alpha\nbeta\ngamma\ndelta\n"
+    (repo / "source.py").write_text(original)
+    _git(repo, "commit", "-am", "record multiline source")
+    _git(repo, "config", "diff.context", "0")
+    if dirty:
+        original = original.replace("beta", "source edit")
+        (repo / "source.py").write_text(original)
+    updated = original.replace("gamma", "candidate edit")
+    env = LocalEnvironment(str(repo))
+    backend = EnvCandidateWorkspace(env)
+    lease = None
+    try:
+        lease = await backend.acquire("context")
+        assert await lease.environment.read_file("source.py") == original
+        await lease.environment.write_file("source.py", updated)
+        patch = await lease.diff()
+        assert (repo / "source.py").read_text() == original
+        await backend.adopt(patch)
+        assert (repo / "source.py").read_text() == updated
+        assert _git(repo, "config", "--get", "diff.context").strip() == "0"
+    finally:
+        if lease is not None:
+            await lease.cleanup()
+        await env.cleanup()

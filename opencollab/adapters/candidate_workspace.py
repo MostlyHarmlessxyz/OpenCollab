@@ -115,7 +115,7 @@ async def _raw_diff_at(
     tracked = _complete(
         await environment.exec_cmd(
             f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary "
-            "--no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/"
+            "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -135,7 +135,7 @@ async def _raw_diff_at(
             await environment.exec_cmd(
                 "git -C "
                 f"{shlex.quote(workspace)} --no-pager diff --no-index --binary "
-                "--no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ "
+                "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ "
                 f"-- /dev/null {shlex.quote(path)}",
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
