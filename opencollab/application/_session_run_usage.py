@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, Awaitable, Callable
 
 
 def _nonnegative_usage_int(value: Any, field: str) -> int:
@@ -27,4 +28,30 @@ def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
         if raw_output is None
         else _nonnegative_usage_int(raw_output, "output_tokens")
     )
-    return input_tokens, max(reported_total, input_tokens + output_tokens)
+    context_tokens = getattr(usage, "context_tokens", None)
+    if context_tokens is not None:
+        context_tokens = _nonnegative_usage_int(context_tokens, "context_tokens")
+    return input_tokens if context_tokens is None else context_tokens, max(reported_total, input_tokens + output_tokens)
+
+
+async def _complete_with_error_usage(
+    runner: Any,
+    complete: Callable[..., Awaitable[Any]],
+    *args: Any,
+    protected_call: bool,
+    **kwargs: Any,
+) -> Any:
+    """Charge reported error usage inside the provider owner exactly once."""
+    try:
+        return await complete(*args, **kwargs)
+    except BaseException as exc:
+        usage = getattr(exc, "usage", None)
+        if usage is not None:
+            _input_tokens, total_tokens = _normalize_completion_usage(usage)
+            runner.state.add_used_tokens(total_tokens)
+            runner._mark_budget_reserve_consumed(protected_call=protected_call)
+            if asyncio.current_task() in runner._draining_provider_tasks:
+                runner._late_provider_usage += (total_tokens,)
+                if runner.late_provider_usage_checkpoint is not None:
+                    runner.late_provider_usage_checkpoint()
+        raise

@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from opencollab.adapters.llm._attempt_usage import _optional_usage_int
 from opencollab.adapters.llm.types import (
     LLMResponse,
     Usage,
@@ -259,6 +260,23 @@ def _parse_usage(
         reasoning_tokens=reasoning_tokens or None,
         estimated=estimated,
         raw_usage=raw_usage,
+    )
+
+
+def _reported_chat_usage(usage: Any) -> Usage | None:
+    """Retain reported counters from an interrupted attempt without estimating."""
+    raw = usage_to_dict(usage)
+    input_tokens = _optional_usage_int(raw, "prompt_tokens")
+    output_tokens = _optional_usage_int(raw, "completion_tokens")
+    if input_tokens is None and output_tokens is None:
+        return None
+    return Usage(
+        input_tokens=input_tokens or 0,
+        output_tokens=output_tokens or 0,
+        cache_read_tokens=_optional_usage_int(raw.get("prompt_tokens_details"), "cached_tokens"),
+        reasoning_tokens=_optional_usage_int(raw.get("completion_tokens_details"), "reasoning_tokens"),
+        estimated=input_tokens is None or output_tokens is None,
+        raw_usage=raw,
     )
 
 

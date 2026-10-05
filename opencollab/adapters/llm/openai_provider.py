@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from opencollab.adapters.llm._chat_response import _parse_response
+from opencollab.adapters.llm._attempt_usage import _combine_attempt_usage
+from opencollab.adapters.llm._chat_response import _parse_response, _reported_chat_usage
 from opencollab.adapters.llm._chat_response import _usage_int as _usage_int
 from opencollab.adapters.llm._chat_stream import (
     _STREAM_REQUEST_FIELDS,
@@ -29,6 +30,7 @@ from opencollab.adapters.llm.tool_contracts import (
 )
 from opencollab.adapters.llm.types import (
     LLMResponse,
+    Usage,
     model_capabilities,
     responses_sampling_supported,
 )
@@ -247,21 +249,37 @@ async def complete_openai(
         return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))
 
     stream_kwargs = {**kwargs, **_STREAM_REQUEST_FIELDS}
+    failed_usages: list[Usage | None] = []
 
     async def request_once() -> LLMResponse:
         # create() and the drain belong to the SAME retry unit. create()
         # returns as soon as the response headers land, so wrapping only it
         # would leave a mid-stream break outside the retry — a silent
         # degradation, since a half-received answer looks like a whole one.
-        state = await _create_and_consume_chat_stream(
-            client, stream_kwargs, first_event_timeout, stream_idle_timeout
-        )
-        return _stream_state_to_response(
-            state, stream_kwargs["messages"], stream_kwargs.get("tools")
-        )
+        state = None
+        try:
+            state = await _create_and_consume_chat_stream(
+                client, stream_kwargs, first_event_timeout, stream_idle_timeout
+            )
+            return _stream_state_to_response(
+                state, stream_kwargs["messages"], stream_kwargs.get("tools")
+            )
+        except BaseException as exc:
+            usage = _reported_chat_usage(state.usage_object) if state is not None else getattr(exc, "usage", None)
+            failed_usages.append(usage)
+            raise
 
-    return await with_retry(
-        request_once,
-        max_retries=max_retries,
-        retry_time_budget=provider_error_time_budget,
-    )
+    try:
+        response = await with_retry(
+            request_once,
+            max_retries=max_retries,
+            retry_time_budget=provider_error_time_budget,
+        )
+    except BaseException as exc:
+        usage = _combine_attempt_usage(failed_usages)
+        if usage is not None:
+            exc.usage = usage
+        raise
+    if failed_usages:
+        response.usage = _combine_attempt_usage([*failed_usages, response.usage])
+    return response

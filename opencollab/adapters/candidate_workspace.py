@@ -105,7 +105,7 @@ async def _raw_diff_at(
     pathspec = ""
     if excluded:
         pathspec = " -- . " + " ".join(
-            shlex.quote(f":(exclude){path}") for path in excluded
+            shlex.quote(f":(exclude,literal){path}") for path in excluded
         )
     git = f"git -C {shlex.quote(workspace)}"
     cached = ""
@@ -114,7 +114,8 @@ async def _raw_diff_at(
         cached = " --cached"
     tracked = _complete(
         await environment.exec_cmd(
-            f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary --no-ext-diff --no-textconv"
+            f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary "
+            "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
@@ -134,7 +135,8 @@ async def _raw_diff_at(
             await environment.exec_cmd(
                 "git -C "
                 f"{shlex.quote(workspace)} --no-pager diff --no-index --binary "
-                f"--no-ext-diff --no-textconv -- /dev/null {shlex.quote(path)}",
+                "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ "
+                f"-- /dev/null {shlex.quote(path)}",
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
             f"candidate untracked diff for {path}",
@@ -143,6 +145,55 @@ async def _raw_diff_at(
         if patch.strip():
             parts.append(patch)
     return "".join(parts)
+
+
+async def _assert_patchable_submodules(
+    environment: Any,
+    workspace: str,
+    base_revision: str,
+    *,
+    index_file: str | None = None,
+) -> None:
+    original_git = f"git -C {shlex.quote(workspace)}"
+    git = original_git
+    if index_file is not None:
+        git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}"
+    raw_options = "--cached --raw --no-renames --no-abbrev -z --ignore-submodules=none"
+    command = (
+        f"{git} diff-index {raw_options} {shlex.quote(base_revision)} -- && "
+        f"{git} diff-files --raw --no-renames --no-abbrev -z --ignore-submodules=none --"
+    )
+    if index_file is not None:
+        # A gitlink replaced by an ordinary directory can look uninitialized
+        # to Git add. Its explicit removal still exists in the real index.
+        command += f" && {original_git} diff-index {raw_options} {shlex.quote(base_revision)} --"
+    changes = _complete(
+        await environment.exec_cmd(
+            command,
+            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+        ),
+        "submodule version inspection",
+    ).split("\0")
+    # --no-renames fixes the raw output at one metadata record and one path.
+    # Paths may themselves start with a colon, so inspect metadata positions.
+    for offset in range(0, len(changes) - 1, 2):
+        modes = changes[offset].removeprefix(":").split(" ", 2)[:2]
+        if "160000" in modes:
+            raise RuntimeError(
+                f"submodule changes cannot be delivered as a repository patch: {changes[offset + 1]}"
+            )
+    # Each initialized module gets its own explicit status query. A parent
+    # module's ignore setting may otherwise hide changes in nested modules.
+    status = _complete(
+        await environment.exec_cmd(
+            f"git -C {shlex.quote(workspace)} submodule foreach --quiet --recursive "
+            + shlex.quote("git status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"),
+            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+        ),
+        "submodule contents inspection",
+    )
+    if status:
+        raise RuntimeError("submodule changes cannot be delivered as a repository patch")
 
 
 @dataclass(slots=True)
@@ -205,6 +256,14 @@ class _CandidateLease:
                         ),
                         "candidate known files capture",
                     )
+            # A repository patch carries gitlink identities, not the module's
+            # files. Ordinary Git apply also leaves module checkouts unchanged.
+            # Let the caller retain this lease instead of delivering a partial
+            # result and deleting the only workspace with the module changes.
+            await _assert_patchable_submodules(
+                self.base_environment, self.candidate_workspace,
+                self.base_revision, index_file=index_file,
+            )
             return await _raw_diff_at(
                 self.base_environment,
                 self.candidate_workspace,
@@ -299,6 +358,7 @@ class EnvCandidateWorkspace:
             ),
             "candidate base revision",
         ).strip()
+        await _assert_patchable_submodules(self._environment, repository_root, base_revision)
         source_patch = await _raw_diff_at(
             self._environment, repository_root, base_revision=base_revision,
         )

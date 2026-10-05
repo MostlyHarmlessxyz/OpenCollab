@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 import httpx
@@ -12,13 +13,15 @@ import openai
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import _env_local as local_module
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace, _CandidateLease
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.application.workflow import WorkflowContext
 from opencollab.bootstrap import _workflow_runtime_session as runtime
-from opencollab.tools import evidence_tools
+from opencollab.tools import builtin_tools, evidence_tools
 from tests.support.workflow_context_test_support import FakeFactory, FakeSession
 
 
@@ -145,6 +148,86 @@ async def test_public_candidate_waits_for_session_subscriber_write(repository, p
     assert len(provider_calls) == 1
     assert context.tokens_remaining() == 99_985
     assert (repository / "source.txt").read_text() == "initial\n"
+
+
+@pytest.mark.parametrize("past_cleanup_deadline", [False, True])
+async def test_public_candidate_timeout_captures_owned_atomic_write(repository, monkeypatch, past_cleanup_deadline):
+    started, release, written = threading.Event(), threading.Event(), threading.Event()
+    cancellation_started, capture_started = asyncio.Event(), asyncio.Event()
+    sessions = []
+    original_write, original_diff = local_module.write_regular_bytes_atomic, _CandidateLease.diff
+    original_build = runtime.build_session
+    original_cancel = ToolExecutionUseCase._cleanup_caller_cancelled_execution
+
+    def controlled_write(*args, **kwargs):
+        if args[2] == "source.txt":
+            started.set()
+            assert release.wait(5)
+        result = original_write(*args, **kwargs)
+        if args[2] == "source.txt":
+            written.set()
+        return result
+
+    async def complete(_llm, messages, **kwargs):
+        return LLMResponse(tool_calls=[{
+            "id": "write", "type": "function", "function": {
+                "name": "file_write", "arguments": json.dumps({
+                    "path": "source.txt", "mode": "create", "overwrite": True,
+                    "content": "late native candidate write\n",
+                }),
+            },
+        }], finish_reason="tool_calls", usage=Usage(10, 5))
+
+    def build(**kwargs):
+        session = original_build(**kwargs)
+        sessions.append(session)
+        return session
+
+    async def cancelled(executor, execution):
+        cancellation_started.set()
+        await original_cancel(executor, execution)
+
+    async def diff(lease, *args, **kwargs):
+        capture_started.set()
+        assert written.is_set(), "candidate captured before its atomic write completed"
+        return await original_diff(lease, *args, **kwargs)
+
+    monkeypatch.setattr(local_module, "write_regular_bytes_atomic", controlled_write)
+    monkeypatch.setattr(LLMClient, "complete", complete)
+    monkeypatch.setattr(runtime, "build_session", build)
+    monkeypatch.setattr(ToolExecutionUseCase, "_cleanup_caller_cancelled_execution", cancelled)
+    monkeypatch.setattr(_CandidateLease, "diff", diff)
+
+    async def workflow(ctx, _args):
+        return await ctx.candidate_agent(
+            "write source", label="candidate", tools=builtin_tools("file_write", headless=True), timeout=0.03,
+        )
+
+    task = asyncio.create_task(_client(repository).workflow(workflow, trace=False, timeout=None))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.wait_for(cancellation_started.wait(), timeout=2)
+        if past_cleanup_deadline:
+            async def wait_for_revocation():
+                while not sessions[0].env.revoked:
+                    await asyncio.sleep(0.005)
+            await asyncio.wait_for(wait_for_revocation(), timeout=2)
+        await asyncio.sleep(0.05)
+        assert not capture_started.is_set()
+        assert not task.done()
+        assert Path(sessions[0].env.workspace, "source.txt").read_text() == "initial\n"
+        release.set()
+        result = await asyncio.wait_for(task, timeout=5)
+        assert result.ok, result.reason
+        candidate = result.output
+        assert candidate.output is None
+        assert "+late native candidate write" in candidate.diff
+        assert candidate.lifecycle_errors == ()
+        assert not Path(sessions[0].env.workspace).exists()
+        assert (repository / "source.txt").read_text() == "initial\n"
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "candidate_agent", "candidate_workflow"])

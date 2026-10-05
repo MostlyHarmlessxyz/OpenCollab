@@ -40,6 +40,9 @@ class Usage:
     # so a run's metrics surface how often the recovery fired — a regression alarm
     # if it spikes or (after a provider fix) silently drops to zero.
     markup_recovered: int = 0
+    # A retried completion accounts for all attempts while context shaping
+    # observes only the final request's input size.
+    context_tokens: int | None = None
 
     @property
     def total_tokens(self) -> int:

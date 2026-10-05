@@ -11,6 +11,7 @@ from opencollab.adapters.llm._chat_response import (
     _build_chat_response,
     _clean_provider_model,
     _normalize_tool_arguments,
+    _reported_chat_usage,
 )
 from opencollab.adapters.llm.errors import StreamedUsageUnavailableError, TransientProviderError
 from opencollab.adapters.llm.first_token import CHAT_STREAM, begin_attempt, mark_first_token
@@ -333,6 +334,19 @@ async def _consume_chat_stream(
     is unchanged and still bounds the whole call.
     """
     state = _ChatStreamState()
+    try:
+        await _drain_chat_stream(stream, state, first_chunk_timeout, idle_timeout)
+    except BaseException as exc:
+        usage = _reported_chat_usage(state.usage_object)
+        if usage is not None:
+            exc.usage = usage
+        raise
+    return state
+
+
+async def _drain_chat_stream(
+    stream: Any, state: _ChatStreamState, first_chunk_timeout: float | None, idle_timeout: float | None
+) -> None:
     iterator = stream.__aiter__()
     first = True
     try:
@@ -353,7 +367,6 @@ async def _consume_chat_stream(
             _absorb_chunk(chunk, state)
     finally:
         await _close_stream(stream)
-    return state
 
 
 async def _create_and_consume_chat_stream(

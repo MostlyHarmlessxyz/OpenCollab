@@ -84,6 +84,9 @@ class _CandidateLeaseTreeProbe:
     async def diff(self) -> str:
         return await self._lease.diff()
 
+    async def diff_excluding(self, paths: Sequence[str]) -> str:
+        return await self._lease.diff(exclude_paths=paths)
+
 
 def _accepts_environment(method: Any) -> bool:
     try:
@@ -205,6 +208,16 @@ def _verification_evidence(
     return tuple(records), tuple(sorted(targets))
 
 
+def _candidate_verification_tools(tools: Sequence[Any]) -> list[Any]:
+    """Keep native execution settings and fork candidate-owned observations."""
+    scope: dict[object, Any] = {}
+    selected = []
+    for tool in tools:
+        fork = getattr(tool, "fork_verification_scope", None)
+        selected.append(fork(scope) if callable(fork) else tool)
+    return selected
+
+
 class WorkflowCandidatesMixin:
     """Runs agent sessions in candidate leases and adopts a selected diff."""
 
@@ -241,7 +254,7 @@ class WorkflowCandidatesMixin:
         if self._candidate_workspace is None:
             raise RuntimeError("candidate workspaces are not available")
         timeout = self._normalize_timeout(timeout)
-        selected_tools = list(tools or ())
+        selected_tools = _candidate_verification_tools(tools or ())
 
         async def run() -> CandidateRun:
             source_before = await self._candidate_source_state()
@@ -399,6 +412,8 @@ class WorkflowCandidatesMixin:
                 # Candidate orchestration consumes no agent slot. Its sessions
                 # use the same capacity as every other agent in the run.
                 child._semaphore = self._semaphore
+                child._task_semaphore = self._task_semaphore
+                child._active_task_concurrency_permit = self._active_task_concurrency_permit
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits

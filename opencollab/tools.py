@@ -122,6 +122,8 @@ def evidence_tools(
     Completed native edits with observed content changes annotate earlier
     records with uncertain applicability and their subsequent edit paths.
     The composition inherits workflow profile defaults and explicit ``limits``.
+    Candidate agents fork these observations for each call and return their
+    execution evidence on ``CandidateRun``.
     """
     return observe_test_evidence(
         builtin_tools(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
@@ -136,6 +137,7 @@ async def run_dual_coder(
     adjudicator: Any = None,
     coder_prompts: tuple[str, str] | None = None,
     role_rules: str = SHARED_RULES,
+    source_reader: Callable[[], Awaitable[str | None]] | None = None,
 ) -> dict[str, Any]:
     """Run the existing candidate and selection sequence with a per-call prompt."""
     goal = _complete_goal(str(args.get("goal") or args.get("description") or ""))
@@ -153,7 +155,8 @@ async def run_dual_coder(
         role_rules = f"{role_rules}\n\n{WORKING_TREE_SUBMISSION_RULES}"
 
     prompts = coder_prompts or (MINIMAL_CODER_PROMPT, CROSS_COMPONENT_CODER_PROMPT)
-    source_before = await ctx.diff()
+    read_source = source_reader or ctx.diff
+    source_before = await read_source()
 
     await ctx.phase("dual-coder-a")
     candidate_a = await _coder_candidate(
@@ -195,7 +198,7 @@ async def run_dual_coder(
             rules=role_rules,
         )
 
-    source_before_adoption = await ctx.diff()
+    source_before_adoption = await read_source()
     if source_before_adoption != source_before:
         raise RuntimeError("candidate_workspace_tracking_failure: source worktree changed before candidate adoption")
 

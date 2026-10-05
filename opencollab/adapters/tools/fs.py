@@ -130,10 +130,25 @@ class FileReadTool(Tool):
 
         selected = window.lines
         start = window.start_line - 1
-        end = start + len(selected)
 
-        # Format with line numbers (ref: claude-code cat -n format)
-        numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
+        # Budget the displayed rows, including their line numbers, and retain
+        # a continuous prefix so the next offset resumes at the first unread row.
+        numbered: list[str] = []
+        chars_used = 0
+        single_line_truncated = False
+        for i, line in enumerate(selected):
+            row = f"{start + i + 1}\t{line}"
+            row_chars = len(row) + (1 if numbered else 0)
+            partial_line = window.chars_truncated and i == len(selected) - 1
+            if chars_used + row_chars > self.max_read_chars or partial_line:
+                if not numbered:
+                    numbered.append(truncate(row, self.max_read_chars))
+                    single_line_truncated = True
+                break
+            numbered.append(row)
+            chars_used += row_chars
+        end = start + len(numbered)
+        has_more = window.has_more or len(numbered) < len(selected)
         if window.total_lines is None:
             total_description = "total not scanned"
         else:
@@ -142,17 +157,17 @@ class FileReadTool(Tool):
             f"File: {params['path']} ({total_description}, "
             f"showing {start + 1}-{end})"
         )
-        body = header + "\n" + truncate("\n".join(numbered), self.max_read_chars)
-        if window.chars_truncated:
+        body = header + "\n" + "\n".join(numbered)
+        if single_line_truncated:
             body += (
-                f"\n... requested content reached the {self.max_read_chars}-character "
-                "read limit. Try a narrower line range or grep to locate relevant "
-                "text. Reading a single line longer than this limit requires a "
-                "larger max_read_chars setting."
+                f"\n... line {start + 1} was character-truncated at the "
+                f"{self.max_read_chars}-character read limit. Reading this entire "
+                "numbered line requires a larger max_read_chars setting. Use grep "
+                "to locate relevant text."
             )
         # Loud footer when lines remain below the shown range — otherwise a
         # default read silently stops at the limit and the tail is lost.
-        if window.has_more and not window.chars_truncated:
+        if has_more and not single_line_truncated:
             if window.total_lines is None:
                 remaining = "more lines below (total not scanned)"
             else:
