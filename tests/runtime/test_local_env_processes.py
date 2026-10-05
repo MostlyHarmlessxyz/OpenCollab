@@ -696,13 +696,13 @@ async def test_local_cleanup_waits_for_cancelled_file_io(tmp_path, monkeypatch) 
     writer = asyncio.create_task(env.write_file("value", "payload"))
     assert await asyncio.to_thread(started.wait, 1.0)
     writer.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await writer
-
     cleanup = asyncio.create_task(env.cleanup())
     await asyncio.sleep(0.02)
+    assert not writer.done()
     assert not cleanup.done()
     release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await writer
     await cleanup
 
 
