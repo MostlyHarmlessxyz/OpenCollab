@@ -412,10 +412,8 @@ class WorkflowCandidatesMixin:
                     deadline_margin_seconds=self._deadline_margin_seconds,
                     workspace_root=workspace if isinstance(workspace, str) else None,
                 )
-                # Candidate workflows are orchestration containers, not agent
-                # sessions. Their child contexts must draw every actual session
-                # from the parent's cap, without the candidate wrapper holding a
-                # slot and reducing child parallelism (or deadlocking at one).
+                # Candidate orchestration consumes no agent slot. Its sessions
+                # use the same capacity as every other agent in the run.
                 child._semaphore = self._semaphore
                 child._task_semaphore = self._task_semaphore
                 child._active_task_concurrency_permit = self._active_task_concurrency_permit

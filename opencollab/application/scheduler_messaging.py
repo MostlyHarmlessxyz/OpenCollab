@@ -543,17 +543,11 @@ class MessagingMixin:
             batch = candidate
         return batch
 
-    async def _drain_message_inbox(
-        self,
-        aid: int,
-        *,
-        allow_current_task: bool = False,
-    ) -> None:
+    async def _drain_message_inbox(self, aid: int, *, allow_current_task: bool = False) -> None:
         lock = self._locks.setdefault(aid, asyncio.Lock())
         async with lock:
             events = await self._drain_message_inbox_locked(
-                aid,
-                allow_current_task=allow_current_task,
+                aid, allow_current_task=allow_current_task
             )
         for event in events:
             await self._safe_emit_scheduler_event(event)
