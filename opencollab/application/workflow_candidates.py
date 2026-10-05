@@ -84,6 +84,9 @@ class _CandidateLeaseTreeProbe:
     async def diff(self) -> str:
         return await self._lease.diff()
 
+    async def diff_excluding(self, paths: Sequence[str]) -> str:
+        return await self._lease.diff(exclude_paths=paths)
+
 
 def _accepts_environment(method: Any) -> bool:
     try:

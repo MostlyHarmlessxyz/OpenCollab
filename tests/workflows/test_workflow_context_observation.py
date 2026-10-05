@@ -9,6 +9,7 @@ import pytest
 from opencollab.application.workflow import (
     WorkflowContext,
 )
+from opencollab.application.workflow_candidates import _CandidateLeaseTreeProbe
 from tests.support.workflow_context_test_support import (
     FakeFactory,
     FakeProbe,
@@ -113,6 +114,39 @@ async def test_diff_reports_probe_output_or_unknown() -> None:
         ).diff()
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_diff_exclusions_keep_legacy_probe_and_backend_behavior() -> None:
+    probe = FakeProbe()
+    context = WorkflowContext(FakeFactory([]), tree_probe=probe)
+    assert await context.diff() == "diff"
+    assert await context.diff(["test_probe.py"]) is None
+
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        async def source_diff(self, paths):
+            self.calls.append(tuple(paths))
+            return "filtered backend diff"
+
+    backend = Backend()
+    context = WorkflowContext(FakeFactory([]), tree_probe=probe, candidate_workspace=backend)
+    assert await context.diff() == "diff"
+    assert await context.diff(["test_probe.py"]) == "filtered backend diff"
+    assert backend.calls == [("test_probe.py",)]
+
+
+@pytest.mark.asyncio
+async def test_candidate_diff_exclusion_failure_remains_unknown() -> None:
+    class FailingLease:
+        async def diff(self, exclude_paths=()):
+            raise OSError("candidate diff read failed")
+
+    context = WorkflowContext(FakeFactory([]), tree_probe=_CandidateLeaseTreeProbe(FailingLease()))
+    assert await context.diff() is None
+    assert await context.diff(["test_probe.py"]) is None
 
 
 @pytest.mark.asyncio

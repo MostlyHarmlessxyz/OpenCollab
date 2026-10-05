@@ -278,9 +278,12 @@ class WorkflowContext(
             return None
         try:
             if exclude_paths:
-                if self._candidate_workspace is None:
-                    raise RuntimeError("source diff exclusions require a candidate workspace")
-                return await self._candidate_workspace.source_diff(exclude_paths)
+                if self._candidate_workspace is not None:
+                    return await self._candidate_workspace.source_diff(exclude_paths)
+                diff_excluding = getattr(self._tree_probe, "diff_excluding", None)
+                if callable(diff_excluding):
+                    return await diff_excluding(exclude_paths)
+                raise RuntimeError("source diff exclusions require a candidate workspace")
             return await self._tree_probe.diff()
         except Exception as exc:  # noqa: BLE001 — inspection must never abort the run
             await self.log(f"diff probe failed: {exc}")
