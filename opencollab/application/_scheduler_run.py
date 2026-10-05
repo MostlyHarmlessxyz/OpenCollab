@@ -98,26 +98,31 @@ class SchedulerRunMixin:
         # for children that cannot survive process restart. Finish that turn
         # before appending a new user message, preserving tool-call ordering.
         if session.state.phase is SessionPhase.AWAITING_EVENTS:
+            turn_start = session.state.active_turn_start_message_index
+            if turn_start is None:
+                turn_start = len(session.state.messages)
             task = self._tasks.get(aid)
             if task is None or task.done():
                 self._reserve_turn_lease(aid)
                 self._start_agent_task(aid, session)
-            await self.wait_until_terminal(aid)
+            await self._wait_for_restored_turn(aid, turn_start)
 
         # A snapshot can capture the durable gap after an external user message
         # was accepted but before its driver task began. Finish that queued turn
         # before accepting another external message, so restore never fuses two
         # unrelated user requests into one provider prompt.
         if getattr(session.state, "pending_external_user_turn", None) is not None:
+            turn_start = len(session.state.messages)
             self._reserve_turn_lease(aid)
             self._start_agent_task(aid, session)
-            await self.wait_until_terminal(aid)
+            await self._wait_for_restored_turn(aid, turn_start)
 
         # Restored teammate messages are scheduler-owned turns. Deliver and
         # finish them before accepting the new external user turn.
         if self._message_inbox.get(aid):
+            turn_start = len(session.state.messages)
             await self._drain_message_inbox(aid)
-            await self.wait_until_terminal(aid)
+            await self._wait_for_restored_turn(aid, turn_start)
 
         if self._shutting_down:
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
@@ -205,6 +210,62 @@ class SchedulerRunMixin:
                 partial_answer or None,
             )
         return partial_answer
+
+    async def _wait_for_restored_turn(self, aid: int, turn_start: int) -> None:
+        """Settle owned recovery work, observing the public turn's cancellation."""
+        cancel_event = self._turn_cancel_events.get(aid)
+        cancel_waiter = (
+            asyncio.create_task(cancel_event.wait())
+            if cancel_event is not None
+            else None
+        )
+        cancellation_requested = bool(cancel_event is not None and cancel_event.is_set())
+        scb = self.table.get(aid)
+        try:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancellation_requested = True
+                if cancel_waiter is not None and cancel_waiter.done():
+                    cancel_waiter = None
+                if cancellation_requested:
+                    await self._settle_cancelled_suspended_turn(aid)
+                task = self._tasks.get(aid)
+                if scb.state.phase.is_terminal() and (task is None or task.done()):
+                    break
+                pending = self._active_scheduler_tasks()
+                if not pending:
+                    await self._wait_for_scheduler_progress(aid)
+                    continue
+                if cancel_waiter is not None:
+                    pending.add(cancel_waiter)
+                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # The public caller performs bounded team cleanup after propagating
+            # cancellation. A suspended recovery driver has already returned,
+            # so record its owned target before cleanup inspects running tasks.
+            self._finalize_cleanup_failure(aid)
+            raise
+        finally:
+            if cancel_waiter is not None:
+                cancel_waiter.cancel()
+                await asyncio.gather(cancel_waiter, return_exceptions=True)
+
+        # Cancellation may race with a successful recovery completion. The
+        # caller still owns recovery, so finish it without accepting a new turn.
+        if cancellation_requested and scb.state.phase is SessionPhase.DONE:
+            scb.state.cancel("interrupted by user")
+            self._autosave_session(aid)
+        if cancellation_requested:
+            session = self._sessions[aid]
+            partial_answer = next(
+                (
+                    message["content"]
+                    for message in reversed(session.state.messages[turn_start:])
+                    if message.get("role") == "assistant" and message.get("content")
+                ),
+                None,
+            )
+            raise SchedulerTurnError(aid, scb.state.phase, scb.state.terminal_reason, partial_answer)
 
     def _turn_descendant_aids(self, aid: int) -> set[int]:
         """Return descendants referenced by this turn's live pending graph."""
