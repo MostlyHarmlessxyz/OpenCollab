@@ -19,6 +19,46 @@ def isolate_usage_log(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
 
 
+@pytest.mark.parametrize("model", [
+    "claude-sonnet-4", "claude-opus-4",
+    "claude-sonnet-4-20250514", "claude-opus-4-20250514",
+    "gateway/claude-sonnet-4-20250514", "claude-sonnet-4-5-20250929",
+    "gateway/claude-sonnet-4-5-20250929",
+])
+@pytest.mark.parametrize("thinking", [False, True])
+async def test_older_claude_snapshots_send_sampling_and_manual_thinking(monkeypatch, model, thinking):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    top_p = 0.95 if thinking else 0.8
+    async with LLMClient(
+        provider="anthropic", model=model,
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+    ) as client:
+        result = await client.complete(
+            [{"role": "user", "content": "Return ok"}], temperature=0.7,
+            thinking=thinking, thinking_params=_MANUAL_THINKING if thinking else None,
+            max_output_tokens=2048, top_p=top_p,
+        )
+
+    assert result.content == "ok"
+    assert len(requests) == 1
+    assert requests[0]["model"] == model
+    assert requests[0]["max_tokens"] == 2048
+    assert requests[0]["top_p"] == top_p
+    if thinking:
+        assert requests[0]["thinking"] == _MANUAL_THINKING["thinking"]
+        assert "temperature" not in requests[0]
+    else:
+        assert requests[0]["temperature"] == 0.7
+        assert "thinking" not in requests[0]
+
+
 @pytest.mark.parametrize("top_p", [None, 0.95, 0.975, 1.0])
 @pytest.mark.parametrize("public_agent", [False, True])
 async def test_sonnet_manual_thinking_sends_supported_top_p(monkeypatch, tmp_path, top_p, public_agent):

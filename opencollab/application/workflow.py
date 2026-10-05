@@ -560,6 +560,7 @@ class WorkflowContext(
         )
         timeout = self._normalize_timeout(timeout)
         call_task = asyncio.current_task()
+        already_owned = call_task in self._active_call_tasks
         if call_task is not None:
             self._active_call_tasks.add(call_task)
         slot_acquired = False
@@ -633,7 +634,7 @@ class WorkflowContext(
                 self._semaphore.release()
             if permit_token is not None:
                 self._active_concurrency_permit.reset(permit_token)
-            if call_task is not None:
+            if call_task is not None and not already_owned:
                 self._active_call_tasks.discard(call_task)
 
     async def _run_agent(

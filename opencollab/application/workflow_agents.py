@@ -223,6 +223,7 @@ class WorkflowAgentsMixin:
         from opencollab.application.workflow import WorkflowBudgetExceeded
 
         call_task = asyncio.current_task()
+        already_owned = call_task in self._active_call_tasks
         if call_task is not None:
             self._active_call_tasks.add(call_task)
 
@@ -250,7 +251,7 @@ class WorkflowAgentsMixin:
         try:
             return await self._run_with_concurrency_permit(run_with_lease)
         finally:
-            if call_task is not None:
+            if call_task is not None and not already_owned:
                 self._active_call_tasks.discard(call_task)
 
     async def _draft_findings_with_lease(
