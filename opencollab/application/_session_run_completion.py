@@ -21,7 +21,7 @@ from opencollab.application._session_run_shared import (
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
-from opencollab.application._session_run_usage import _normalize_completion_usage
+from opencollab.application._session_run_usage import _complete_with_error_usage, _normalize_completion_usage
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse, RequestOutputRequirementPort, RequestTokenEstimatorPort
@@ -94,7 +94,7 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
         for pattern in (
             rf"\b(?:{rejection})\s+(?:(?:value\s+for|parameter|field)\s*:?\s+)?"
             rf"{choice}\b",
-            rf"\b{choice}\b(?:\s+(?:parameter|field|value))?"
+            rf'\b{choice}\b(?:\s+(?:parameter|field|value)|\s*:\s*type "tool" and "any" are)?'
             rf"\s+(?:(?:is|was)\s+)?(?:{rejection})\b",
             rf"\b(?:does\s+not\s+support|doesn't\s+support|rejects?|rejected)"
             rf"\s+(?:the\s+)?{choice}\b",
@@ -680,7 +680,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         async def complete_owned() -> CompletionResponse:
             try:
-                return await complete(messages, on_response=account_response, **kwargs)
+                return await _complete_with_error_usage(
+                    self, complete, messages, protected_call=protected_call, on_response=account_response, **kwargs,
+                )
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
 
@@ -720,12 +722,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         already in the working tree). ``None`` disables the ceiling.
         """
         await self._start_llm_step()
+        protected_call = self.state.wind_down_done
+        operation = _complete_with_error_usage(self, self.llm.complete, protected_call=protected_call, **kwargs)
         if self._per_call_timeout is None:
-            return await self.llm.complete(**kwargs)
+            return await operation
         try:
-            protected_call = self.state.wind_down_done
             return await abandon_on_timeout(
-                self.llm.complete(**kwargs),
+                operation,
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
                 late_task_tracker=self._mark_provider_task_draining,

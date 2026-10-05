@@ -454,11 +454,11 @@ def test_cancel_event_during_restored_awaiting_preamble_settles_without_appendin
             return await step(self, cancel_event)
 
     async def resumed_old_turn(sess, _cancel_event):
-        sess.state.resume_to_idle()
-        sess.state.set_phase(SessionPhase.PRECHECK)
+        # Recovery stays suspended while its prior child is outstanding.
+        assert sess.state.phase is SessionPhase.AWAITING_EVENTS
+        assert not sess.state.pending_events.is_complete()
         parent_started.set()
-        await asyncio.Event().wait()
-        return "unreachable"
+        return ""
 
     async def blocked_child(_sess):
         child_started.set()
@@ -500,48 +500,49 @@ def test_cancel_event_during_restored_awaiting_preamble_settles_without_appendin
         (SessionPhase.ERROR, "sticky prior error"),
     ],
 )
-def test_cancel_and_prior_terminal_completion_together_preserve_prior_outcome(
-    terminal_phase, terminal_reason, monkeypatch
+def test_cancel_and_prior_terminal_completion_together_keep_main_recovery_outcome(
+    terminal_phase, terminal_reason
 ):
-    lead = ScriptedSession("lead", [])
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    cancel_event = asyncio.Event()
+
+    class CompletingSession(ScriptedSession):
+        async def run_loop(self, _cancel_event=None):
+            self.state.resume_to_idle()
+            self.state.set_phase(SessionPhase.PRECHECK)
+            started.set()
+            await finish.wait()
+            self.state.append_message({"role": "assistant", "content": "prior result"})
+            self.state.set_phase(terminal_phase)
+            self.state.terminal_reason = terminal_reason
+            return "prior result"
+
+    lead = CompletingSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
     lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
-    lead.state.messages.append({"role": "assistant", "content": "prior result"})
-    prior_result = "prior result" if terminal_phase is SessionPhase.DONE else "prior failure"
-    lead.result = prior_result
-    if terminal_phase is SessionPhase.ERROR:
-        lead.state.terminal_reason = terminal_reason
-
-    cancel_event = asyncio.Event()
-    terminal_gate = asyncio.Event()
-    terminal_wait_started = asyncio.Event()
-
-    async def gated_terminal_wait(_aid):
-        terminal_wait_started.set()
-        await terminal_gate.wait()
-
-    monkeypatch.setattr(scheduler, "_start_agent_task", lambda _aid, _session: None)
-    monkeypatch.setattr(scheduler, "wait_until_terminal", gated_terminal_wait)
 
     async def scenario():
         call = asyncio.create_task(
             scheduler.run("incoming request", cancel_event=cancel_event)
         )
-        await asyncio.wait_for(terminal_wait_started.wait(), 0.5)
-        lead.state.phase = terminal_phase
-        lead.state.terminal_reason = terminal_reason
-        scheduler._release_turn_lease(0)
+        await asyncio.wait_for(started.wait(), 0.5)
         cancel_event.set()
-        terminal_gate.set()
+        finish.set()
 
         with pytest.raises(SchedulerTurnError) as error:
             await asyncio.wait_for(call, 0.5)
 
-        assert error.value.phase is terminal_phase
-        assert lead.state.phase is terminal_phase
-        assert lead.state.terminal_reason == terminal_reason
+        expected_phase = SessionPhase.STOPPED if terminal_phase is SessionPhase.DONE else terminal_phase
+        expected_reason = "interrupted by user" if terminal_phase is SessionPhase.DONE else terminal_reason
+        assert error.value.phase is expected_phase
+        assert error.value.partial_answer == "prior result"
+        assert lead.state.phase is expected_phase
+        assert lead.state.terminal_reason == expected_reason
         assert lead.state.messages == [{"role": "assistant", "content": "prior result"}]
-        assert lead.result == prior_result
+        assert scheduler.table.get(0).result == (
+            "prior result" if terminal_phase is SessionPhase.DONE else "Error: agent failed: sticky prior error"
+        )
         assert lead.added == []
         assert not scheduler._active_scheduler_tasks()
         assert not scheduler._turn_lease

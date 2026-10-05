@@ -28,6 +28,7 @@ from opencollab.adapters.llm.responses_provider import complete_responses
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.domain.token_estimation import estimate_request_tokens
 
 # Native data-residency endpoints share the OpenAI model parameter rules.
@@ -46,7 +47,7 @@ async def _record_api_usage_async(**kwargs: Any) -> None:
             record_api_usage(**kwargs)
 
     try:
-        await asyncio.to_thread(_locked_record)
+        await await_owned_operation(asyncio.to_thread(_locked_record), propagate_cancellation=True)
     except Exception:
         return
 
@@ -241,6 +242,7 @@ class LLMClient:
         as the nucleus-sampling knob. Unset == byte-identical request as today.
         """
         start = time.monotonic()
+        response = None
         # One timer per call, installed here and not in any provider module:
         # every arm reaches its provider through this one method, so the
         # record cannot be present on one arm's path and absent from another's.
@@ -326,16 +328,25 @@ class LLMClient:
                     transport_timing=transport_timing,
                 )
                 return response
-            except Exception as exc:
-                await _record_api_usage_async(
-                    provider=self.provider,
-                    model=self.model,
-                    wire_protocol=self.wire_protocol,
-                    reasoning_effort=reasoning_effort,
-                    base_url=self.base_url,
-                    latency_s=time.monotonic() - start,
-                    status="error",
-                    error=exc,
-                    transport_timing=first_token.snapshot(),
-                )
+            except BaseException as exc:
+                if response is not None:
+                    exc.usage = response.usage
+                else:
+                    try:
+                        await _record_api_usage_async(
+                            provider=self.provider,
+                            model=self.model,
+                            wire_protocol=self.wire_protocol,
+                            reasoning_effort=reasoning_effort,
+                            base_url=self.base_url,
+                            latency_s=time.monotonic() - start,
+                            status="error",
+                            error=exc,
+                            transport_timing=first_token.snapshot(),
+                        )
+                    except asyncio.CancelledError as cancellation:
+                        usage = getattr(exc, "usage", None)
+                        if usage is not None:
+                            cancellation.usage = usage
+                        raise
                 raise

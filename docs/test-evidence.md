@@ -17,6 +17,11 @@ print(candidate.test_records)
 print(candidate.verified_targets)
 ```
 
+The Git candidate backend reads clean initialized submodules. Source submodule
+changes are reported before acquisition. Candidate submodule changes raise
+`CandidateCaptureError` and retain the complete worktree for recovery, including
+dirty files, commit changes, and changes within nested submodules.
+
 The constructor accepts the native `limits` mapping and inherits the current
 workflow's agent profile defaults. Each invocation creates independent tool
 instances. Bash retains its schema, command, timeout, formatted output, process

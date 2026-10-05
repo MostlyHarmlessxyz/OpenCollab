@@ -216,13 +216,18 @@ class Session:
         return self._auto_save_path
 
     @property
-    def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
-        """Background subscriber work that must finish before session teardown."""
+    def pending_execution_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Model and tool operations still settling after the turn returned."""
         owned = {
-            *self.event_bus.pending_tasks,
             *self.runner.pending_cleanup_tasks,
             *getattr(self.tool_execution, "pending_cleanup_tasks", ()),
         }
+        return tuple(task for task in owned if not task.done())
+
+    @property
+    def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Execution and subscriber work that must finish before teardown."""
+        owned = {*self.pending_execution_tasks, *self.event_bus.pending_tasks}
         return tuple(task for task in owned if not task.done())
 
     @property

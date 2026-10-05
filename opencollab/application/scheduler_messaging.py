@@ -621,6 +621,12 @@ class MessagingMixin:
             return events
         if aid in self._cancelled_turn_inbox_holds:
             return events
+        # An external turn can already own the append while its driver does
+        # not exist yet. Keep accepted messages queued until that append and
+        # the following turn finish, just as for an existing driver.
+        delivery = self._message_delivery_tasks.get(aid)
+        if delivery is not None and not delivery.done():
+            return events
         task = self._tasks.get(aid)
         current_task = asyncio.current_task()
         if (
@@ -629,7 +635,11 @@ class MessagingMixin:
             and not (allow_current_task and task is current_task)
         ):
             return events
-        if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
+        if (
+            scb.state.phase is SessionPhase.AWAITING_EVENTS
+            or not scb.state.pending_events.is_empty()
+            or scb.state.pending_external_user_turn is not None
+        ):
             return events
         messages = self._bounded_message_batch(inbox)
         if not messages or self._shutting_down:

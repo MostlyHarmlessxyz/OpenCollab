@@ -129,7 +129,9 @@ class LocalEnvironment(Environment):
         self._file_operations.add(owner)
         owner.add_done_callback(self._file_operations.discard)
         owner.add_done_callback(consume_task_result)
-        return await asyncio.shield(owner)
+        # The worker can publish after caller cancellation. Keep its native
+        # tool and write lock alive until that publication has settled.
+        return await await_owned_operation(owner, propagate_cancellation=True)
 
     async def read_file(self, path: str) -> str:
         payload = await self._run_file_operation(

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.adapters.llm._attempt_usage import (  # noqa: F401 - compatibility re-export
+    _combine_attempt_usage as _combine_responses_usage,
+)
+from opencollab.adapters.llm._attempt_usage import _optional_usage_int
 from opencollab.adapters.llm.types import (
     Usage,
     estimate_messages_tokens,
@@ -12,21 +16,32 @@ from opencollab.adapters.llm.types import (
 )
 
 
-def _optional_usage_int(source: Any, key: str) -> int | None:
-    if not isinstance(source, dict) or source.get(key) is None:
-        return None
-    if isinstance(source[key], bool):
-        return None
-    try:
-        value = int(source[key])
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return value if value >= 0 else None
-
-
 def _positive_usage_int(source: Any, key: str) -> int | None:
     value = _optional_usage_int(source, key)
     return value if value is not None and value > 0 else None
+
+
+def _reported_responses_usage(response: Any) -> Usage | None:
+    """Retain only counters actually returned by a failed attempt."""
+    raw = usage_to_dict(getattr(response, "usage", None))
+    input_tokens = _optional_usage_int(raw, "input_tokens")
+    output_tokens = _optional_usage_int(raw, "output_tokens")
+    if input_tokens is None and output_tokens is None:
+        return None
+    input_details = raw.get("input_tokens_details") or {}
+    output_details = raw.get("output_tokens_details") or {}
+    cache_creation = _optional_usage_int(input_details, "cache_write_tokens")
+    if cache_creation is None:
+        cache_creation = _optional_usage_int(raw, "cache_write_tokens")
+    return Usage(
+        input_tokens=input_tokens or 0,
+        output_tokens=output_tokens or 0,
+        cache_read_tokens=_optional_usage_int(input_details, "cached_tokens"),
+        cache_creation_tokens=cache_creation,
+        reasoning_tokens=_optional_usage_int(output_details, "reasoning_tokens"),
+        estimated=input_tokens is None or output_tokens is None,
+        raw_usage=raw,
+    )
 
 
 def parse_responses_usage(

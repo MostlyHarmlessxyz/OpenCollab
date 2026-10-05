@@ -536,6 +536,42 @@ async def test_candidate_and_nested_collection_complete_with_one_slot(repository
     assert parent.agent_failures == ()
 
 
+@pytest.mark.parametrize("capacity", [1, 2])
+@pytest.mark.parametrize("outer_collection", [False, True])
+async def test_parallel_candidate_collections_share_task_capacity(repository, capacity, outer_collection):
+    parent = WorkflowContext(
+        FakeFactory([]), max_concurrency=1, task_concurrency=capacity,
+        candidate_workspace=EnvCandidateWorkspace(LocalEnvironment(str(repository))),
+    )
+    active = peak = 0
+
+    async def service():
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            if active > capacity:
+                raise RuntimeError("service capacity exceeded")
+            await asyncio.sleep(0.02)
+            return "completed"
+        finally:
+            active -= 1
+
+    async def nested(child, _args):
+        return await child.parallel([service, service])
+
+    thunks = [
+        lambda: parent.candidate_workflow(nested, {}, label="A"),
+        lambda: parent.candidate_workflow(nested, {}, label="B"),
+    ]
+    pending = parent.parallel(thunks) if outer_collection else asyncio.gather(*(thunk() for thunk in thunks))
+    candidates = await asyncio.wait_for(pending, timeout=10)
+
+    assert peak == capacity
+    assert [candidate.output for candidate in candidates] == [["completed", "completed"]] * 2
+    assert parent.agent_failures == ()
+
+
 async def test_timed_out_child_holds_shared_slot_until_cleanup_finishes(repository):
     slow = CancelCleanupSession()
     later_entered = asyncio.Event()

@@ -28,16 +28,42 @@ DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS = 120.0
 class WorkflowRuntimeMixin:
     """Call cleanup, concurrency permits, and timeout helpers."""
 
+    @staticmethod
+    def _lease_cleanup_tasks(
+        lease: Any,
+        *,
+        include_done: bool = False,
+    ) -> set[asyncio.Task[Any]]:
+        current = asyncio.current_task()
+        tasks = set(lease.pending_tasks or [])
+        for session in lease.sessions:
+            tasks.update(getattr(session, "pending_cleanup_tasks", ()))
+        return {
+            task
+            for task in tasks
+            if task is not current and (include_done or not task.done())
+        }
+
     async def _release_call_after_tasks(
         self,
         lease: Any,
-        tasks: list[asyncio.Task[Any]],
         *,
         release_slot: bool,
     ) -> None:
         """Release one timed-out call's budget and slot after it is quiescent."""
         try:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            saw_empty = False
+            while True:
+                pending = self._lease_cleanup_tasks(lease)
+                if pending:
+                    saw_empty = False
+                    await asyncio.gather(*pending, return_exceptions=True)
+                elif saw_empty:
+                    return
+                else:
+                    saw_empty = True
+                # Completion callbacks may enqueue a late-usage checkpoint.
+                await asyncio.sleep(0)
         finally:
             self.budget.release(lease)
             if release_slot:
@@ -50,14 +76,13 @@ class WorkflowRuntimeMixin:
         release_slot: bool,
     ) -> bool:
         """Release now, or hand the lease and semaphore slot to cleanup."""
-        pending = [task for task in (lease.pending_tasks or []) if not task.done()]
+        pending = self._lease_cleanup_tasks(lease, include_done=True)
         if not pending:
             self.budget.release(lease)
             return False
         cleanup_task = asyncio.create_task(
             self._release_call_after_tasks(
                 lease,
-                pending,
                 release_slot=release_slot,
             )
         )
@@ -85,6 +110,10 @@ class WorkflowRuntimeMixin:
         current = asyncio.current_task()
         active = self._active_concurrency_permit.get()
         if active is not None and active.owner is current:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in active.pending_cleanup_tasks if not task.done()),
+                return_exceptions=True,
+            )
             return await operation()
 
         await self._semaphore.acquire()

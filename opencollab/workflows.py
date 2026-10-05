@@ -14,6 +14,7 @@ class WorkflowContext(Protocol):
     """Stable subset of context operations intended for workflow authors."""
 
     workspace_root: str | None
+    host_workspace: str | None
 
     async def agent(
         self,
@@ -54,7 +55,7 @@ class WorkflowContext(Protocol):
         exclude_paths: Sequence[str] = (),
     ) -> bool | None: ...
 
-    async def diff(self) -> str | None: ...
+    async def diff(self, exclude_paths: Sequence[str] = ()) -> str | None: ...
 
     async def execute_verification(
         self,

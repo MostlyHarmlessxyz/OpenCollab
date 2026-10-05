@@ -165,6 +165,7 @@ class WorkflowContext(
         deadline_monotonic: float | None = None,
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
+        host_workspace: str | None = None,
     ) -> None:
         max_concurrency = _positive_concurrency(
             max_concurrency,
@@ -219,6 +220,7 @@ class WorkflowContext(
         # static pass over the source (e.g. the STEP-5a pre-recon fact sheet); it
         # changes no behavior on its own. ``None`` for unbounded CLI / tests.
         self.workspace_root = workspace_root
+        self.host_workspace = host_workspace
         # Absolute wall-clock deadline on the ``time.monotonic()`` clock (None =
         # unbounded: no wall, e.g. CLI runs and tests). ``time_low()`` reads it.
         self._deadline_monotonic = deadline_monotonic
@@ -271,11 +273,18 @@ class WorkflowContext(
             await self.log(f"source_changed probe failed: {exc}")
             return None
 
-    async def diff(self) -> str | None:
+    async def diff(self, exclude_paths: Sequence[str] = ()) -> str | None:
         """Return the current working-tree diff when a probe is available."""
         if self._tree_probe is None:
             return None
         try:
+            if exclude_paths:
+                if self._candidate_workspace is not None:
+                    return await self._candidate_workspace.source_diff(exclude_paths)
+                diff_excluding = getattr(self._tree_probe, "diff_excluding", None)
+                if callable(diff_excluding):
+                    return await diff_excluding(exclude_paths)
+                raise RuntimeError("source diff exclusions require a candidate workspace")
             return await self._tree_probe.diff()
         except Exception as exc:  # noqa: BLE001 — inspection must never abort the run
             await self.log(f"diff probe failed: {exc}")
@@ -570,6 +579,12 @@ class WorkflowContext(
         budget_token = None
         permit_token = None
         try:
+            permit = self._active_concurrency_permit.get()
+            if permit is not None and permit.owner is call_task:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in permit.pending_cleanup_tasks if not task.done()),
+                    return_exceptions=True,
+                )
             # Reserve before the concurrency gate so every agent declared in a
             # parallel fan-out registers with the shared allocator, even when
             # only one of them may run at a time.
@@ -720,11 +735,15 @@ class WorkflowContext(
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()
-        return bool(
-            lease is not None
-            and lease.pending_tasks
-            and any(not task.done() for task in lease.pending_tasks)
-        )
+        if lease is None:
+            return False
+        pending = set(lease.pending_tasks or ())
+        for session in lease.sessions:
+            execution = getattr(session, "pending_execution_tasks", None)
+            if execution is None:
+                execution = getattr(session, "pending_cleanup_tasks", ())
+            pending.update(execution)
+        return any(not task.done() for task in pending)
 
     # -- observability ----------------------------------------------------- #
 

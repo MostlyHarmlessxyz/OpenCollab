@@ -73,7 +73,7 @@ class EnvWorkingTreeProbe:
         # Empty excludes -> identical to ``changed()`` for ordinary runs.
         if not paths:
             return await self.changed()
-        # Each ``:(exclude)<path>`` magic pathspec is ONE shlex-quoted token
+        # Each ``:(exclude,literal)<path>`` pathspec is ONE shlex-quoted token
         # (quote the whole magic+path). The positive pathspec ``.`` is required —
         # an exclude-only pathspec list matches nothing. ``--untracked-files=all``
         # is required so a NEW injected test file in an otherwise-untracked dir is
@@ -81,7 +81,7 @@ class EnvWorkingTreeProbe:
         # a dir to ``?? tests/``, which a file-level exclude can't match, leaking
         # the injected file back in. With ``=all`` the output is empty iff only
         # injected files were dirty (drops modified-tracked AND untracked-new).
-        excludes = " ".join(shlex.quote(f":(exclude){p}") for p in paths)
+        excludes = " ".join(shlex.quote(f":(exclude,literal){p}") for p in paths)
         cmd = (
             f"git -C {shlex.quote(self._workspace)} status --porcelain "
             f"--untracked-files=all -- . {excludes}"

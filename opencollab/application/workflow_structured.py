@@ -171,6 +171,10 @@ class WorkflowStructuredMixin:
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
 
+        if self._active_call_has_pending_cleanup():
+            await self.log(f"structured retry skipped while prior execution drains ({label or 'agent'})")
+            return None
+
         # Corrective pass (only when the capture is genuinely empty above): force
         # the structured commit on a single-tool session pinned to a
         # named-function ``tool_choice`` — graceful, NOT guaranteed (an endpoint

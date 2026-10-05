@@ -78,7 +78,7 @@ def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():
     assert result is True  # bool(stdout)
     assert env.commands[-1] == (
         "git -C /ws status --porcelain --untracked-files=all "
-        "-- . ':(exclude)tests/test_inj.py'"
+        "-- . ':(exclude,literal)tests/test_inj.py'"
     )
 
 
@@ -98,7 +98,7 @@ def test_changed_excluding_quotes_each_exclude_token_separately():
 
     assert env.commands[-1] == (
         "git -C /ws status --porcelain --untracked-files=all "
-        "-- . ':(exclude)a/b.py' ':(exclude)c/d.py'"
+        "-- . ':(exclude,literal)a/b.py' ':(exclude,literal)c/d.py'"
     )
 
 
@@ -222,6 +222,30 @@ def test_real_git_source_edit_alongside_injected_is_detected(tmp_path: Path):
     assert run(probe.changed()) is True
     # Excluding only the injected test still sees the source edit -> True.
     assert run(probe.changed_excluding([inj])) is True
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+@pytest.mark.parametrize("tracked", [False, True])
+def test_literal_dynamic_route_exclusion_keeps_other_source_changes(tmp_path: Path, tracked):
+    repo = tmp_path / "repo"
+    excluded = repo / "app/[id]/page.tsx"
+    other = repo / "app/i/page.tsx"
+    excluded.parent.mkdir(parents=True)
+    other.parent.mkdir(parents=True)
+    excluded.write_text("initial route\n")
+    if tracked:
+        other.write_text("initial source\n")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    excluded.write_text("generated route\n")
+    probe = EnvWorkingTreeProbe(_RealEnv(str(repo)), workspace=str(repo))
+    paths = ["app/[id]/page.tsx"]
+    assert run(probe.changed_excluding(paths)) is False
+    other.write_text("source edit\n")
+    assert run(probe.changed_excluding(paths)) is True
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
