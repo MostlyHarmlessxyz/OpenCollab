@@ -485,7 +485,9 @@ class WorkflowCandidatesMixin:
                             await child.release_isolated_workspaces()
                         except Exception as exc:
                             detail = f"{type(exc).__name__}: {exc}"
-                            preserve_lease = bool(getattr(child._factory, "has_pending_isolated_cleanup", False))
+                            preserve_lease = preserve_lease or bool(
+                                getattr(child._factory, "has_pending_isolated_cleanup", False)
+                            )
                             if preserve_lease:
                                 detail += f"; candidate worktree retained at {lease.candidate_workspace}"
                             self._record_agent_failure(f"{label}:cleanup", exc)
