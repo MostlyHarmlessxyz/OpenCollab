@@ -73,6 +73,9 @@ class _ObservedEdit:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
 
+    def fork_verification_scope(self, scope: dict[object, Any]) -> Tool:
+        return self._owner.fork_verification_scope(scope).observe_edits(self._delegate)
+
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         observed = _ObservedRuntime(runtime, self._owner)
         observed.observations = _WriteObservations(getattr(runtime, "observations", None), self._owner)
@@ -89,6 +92,12 @@ class BashEvidence:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
+
+    def fork_verification_scope(self, scope: dict[object, Any]) -> BashEvidence:
+        """Share one fresh observer among this call's Bash and edit tools."""
+        if self not in scope:
+            scope[self] = BashEvidence(self._delegate)
+        return scope[self]
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         return await self._delegate.execute_with_runtime(params, _ObservedRuntime(runtime, self))

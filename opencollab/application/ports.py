@@ -217,6 +217,14 @@ class ToolPort(Protocol):
         ...
 
 
+class VerificationScopedToolPort(Protocol):
+    """Optional tool capability for evidence owned by one candidate call."""
+
+    def fork_verification_scope(self, scope: dict[object, Any]) -> ToolPort:
+        """Fork observations while sharing the call's scope with sibling tools."""
+        ...
+
+
 class SkillStorePort(Protocol):
     """Discovery + retrieval of skill packages. The reserved plug-point for skills.
 
