@@ -486,6 +486,7 @@ def build_workflow_context(
         probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
         factory._owned_source_environment = probe_env
     candidate_root = getattr(probe_env, "workspace", None)
+    host_workspace = getattr(probe_env, "host_workspace", None) if candidate_workspace is None else None
     tree_probe = (
         _CandidateSourceTreeProbe(candidate_workspace)
         if candidate_workspace is not None
@@ -507,6 +508,7 @@ def build_workflow_context(
         tree_probe=tree_probe,
         candidate_workspace=candidate_workspace,
         workspace_root=source_root if source_root is not None else workspace,
+        host_workspace=host_workspace,
         deadline_monotonic=deadline_monotonic,
         deadline_margin_seconds=deadline_margin_seconds,
     )

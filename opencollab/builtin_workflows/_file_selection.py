@@ -49,10 +49,11 @@ async def adjudicate_candidate_files(
     candidate_b: CandidateRun,
     selector_prompt: str = SELECTION_PROMPT,
     evidence_parent: str | None = None,
+    evidence_files: CandidateEvidenceFiles | None = None,
     rules: str = SHARED_RULES,
 ) -> tuple[str, Any, str]:
     """Compare complete small diffs directly and retain paged evidence for all sizes."""
-    files = CandidateEvidenceFiles(evidence_parent)
+    files = evidence_files or CandidateEvidenceFiles(evidence_parent)
     evidence = {
         "A": files.add_candidate("A", candidate_a),
         "B": files.add_candidate("B", candidate_b),

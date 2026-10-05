@@ -105,7 +105,7 @@ async def _raw_diff_at(
     pathspec = ""
     if excluded:
         pathspec = " -- . " + " ".join(
-            shlex.quote(f":(exclude){path}") for path in excluded
+            shlex.quote(f":(exclude,literal){path}") for path in excluded
         )
     git = f"git -C {shlex.quote(workspace)}"
     cached = ""

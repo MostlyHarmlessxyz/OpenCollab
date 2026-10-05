@@ -163,6 +163,7 @@ class WorkflowContext(
         deadline_monotonic: float | None = None,
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
+        host_workspace: str | None = None,
     ) -> None:
         max_concurrency = _positive_concurrency(
             max_concurrency,
@@ -218,6 +219,7 @@ class WorkflowContext(
         # static pass over the source (e.g. the STEP-5a pre-recon fact sheet); it
         # changes no behavior on its own. ``None`` for unbounded CLI / tests.
         self.workspace_root = workspace_root
+        self.host_workspace = host_workspace
         # Absolute wall-clock deadline on the ``time.monotonic()`` clock (None =
         # unbounded: no wall, e.g. CLI runs and tests). ``time_low()`` reads it.
         self._deadline_monotonic = deadline_monotonic
@@ -270,11 +272,15 @@ class WorkflowContext(
             await self.log(f"source_changed probe failed: {exc}")
             return None
 
-    async def diff(self) -> str | None:
+    async def diff(self, exclude_paths: Sequence[str] = ()) -> str | None:
         """Return the current working-tree diff when a probe is available."""
         if self._tree_probe is None:
             return None
         try:
+            if exclude_paths:
+                if self._candidate_workspace is None:
+                    raise RuntimeError("source diff exclusions require a candidate workspace")
+                return await self._candidate_workspace.source_diff(exclude_paths)
             return await self._tree_probe.diff()
         except Exception as exc:  # noqa: BLE001 — inspection must never abort the run
             await self.log(f"diff probe failed: {exc}")
