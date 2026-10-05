@@ -569,6 +569,12 @@ class WorkflowContext(
         budget_token = None
         permit_token = None
         try:
+            permit = self._active_concurrency_permit.get()
+            if permit is not None and permit.owner is call_task:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in permit.pending_cleanup_tasks if not task.done()),
+                    return_exceptions=True,
+                )
             # Reserve before the concurrency gate so every agent declared in a
             # parallel fan-out registers with the shared allocator, even when
             # only one of them may run at a time.
@@ -719,11 +725,7 @@ class WorkflowContext(
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()
-        return bool(
-            lease is not None
-            and lease.pending_tasks
-            and any(not task.done() for task in lease.pending_tasks)
-        )
+        return lease is not None and bool(self._lease_cleanup_tasks(lease, include_done=True))
 
     # -- observability ----------------------------------------------------- #
 
