@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 
 import pytest
 
+from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.session_run import ENFORCEMENT_ON
 from opencollab.application.workflow import WorkflowContext
 from opencollab.bootstrap import build_session
-from tests.support.session_characterization_test_support import FakeAgent, llm_response
+from tests.support.session_characterization_test_support import FakeAgent, FakeTool, llm_response, tool_call
 from tests.support.workflow_context_test_support import FakeFactory, FakeSession
 
 
@@ -55,6 +58,53 @@ class RealSessionFactory:
         )
         self.sessions.append(session)
         return session
+
+
+@pytest.mark.asyncio
+async def test_pending_autosave_allows_synthesis_and_keeps_final_cleanup_owned():
+    class Provider:
+        calls = 0
+
+        async def complete(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return llm_response(tool_calls=[tool_call(name="read_file", arguments="{}")])
+            if self.calls == 2:
+                raise RuntimeError("provider failed after gathering evidence")
+            report = {"summary": "Recovered evidence", "findings": [], "insufficient_evidence": True}
+            return llm_response(tool_calls=[
+                tool_call(name="submit_findings", arguments=json.dumps(report)),
+            ])
+
+    release = threading.Event()
+
+    class SavingFactory(RealSessionFactory):
+        def build_workflow_session(self, **kwargs):
+            session = super().build_workflow_session(**kwargs)
+            if len(self.sessions) == 1:
+                session.event_bus.subscribe(AutoSaveSubscriber(lambda: release.wait(5)))
+            return session
+
+    provider = Provider()
+    factory = SavingFactory(provider, 1.0)
+    ctx = WorkflowContext(factory, max_concurrency=1, budget_total=200000)
+    try:
+        result = await asyncio.wait_for(ctx.agent(
+            "inspect", tools=[FakeTool(name="read_file", result="observed evidence")],
+            budget=100000, enforcement_strength=ENFORCEMENT_ON,
+        ), 2.0)
+        assert "Recovered evidence" in result
+        assert provider.calls == 3
+        assert len(factory.sessions) == 2
+        assert not factory.sessions[0].pending_execution_tasks
+        assert factory.sessions[0].event_bus.pending_tasks
+        assert len(ctx.budget._leases) == 1
+        assert ctx._semaphore._value == 0
+    finally:
+        release.set()
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), 2.0)
+    assert ctx.budget._leases == []
+    assert ctx._semaphore._value == 1
 
 
 @pytest.mark.asyncio

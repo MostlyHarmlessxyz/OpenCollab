@@ -725,7 +725,15 @@ class WorkflowContext(
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()
-        return lease is not None and bool(self._lease_cleanup_tasks(lease, include_done=True))
+        if lease is None:
+            return False
+        pending = set(lease.pending_tasks or ())
+        for session in lease.sessions:
+            execution = getattr(session, "pending_execution_tasks", None)
+            if execution is None:
+                execution = getattr(session, "pending_cleanup_tasks", ())
+            pending.update(execution)
+        return any(not task.done() for task in pending)
 
     # -- observability ----------------------------------------------------- #
 
