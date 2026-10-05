@@ -399,6 +399,8 @@ class WorkflowCandidatesMixin:
                 # Candidate orchestration consumes no agent slot. Its sessions
                 # use the same capacity as every other agent in the run.
                 child._semaphore = self._semaphore
+                child._task_semaphore = self._task_semaphore
+                child._active_task_concurrency_permit = self._active_task_concurrency_permit
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
