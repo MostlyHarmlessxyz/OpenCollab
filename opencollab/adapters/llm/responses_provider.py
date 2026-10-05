@@ -489,9 +489,6 @@ def _parse_stream(
         state.completed_response,
         expected_model,
     )
-    if forced_text_tool is not None and finish_reason != "stop":
-        incomplete = to_plain_data(getattr(state.completed_response, "incomplete_details", None))
-        raise ResponsesProtocolError(f"JSON Schema tool response incomplete: {incomplete!r}")
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
     interrupted_calls = any(
@@ -541,9 +538,9 @@ def _parse_stream(
                     "function": {"name": item.get("name"), "arguments": item["arguments"]},
                 }
             )
-    if forced_text_tool is not None:
-        if tool_calls:
-            raise ResponsesProtocolError("JSON Schema tool response unexpectedly contained function calls")
+    if forced_text_tool is not None and tool_calls:
+        raise ResponsesProtocolError("JSON Schema tool response unexpectedly contained function calls")
+    if forced_text_tool is not None and finish_reason == "stop":
         if not content:
             raise ResponsesEmptyOutputError("JSON Schema tool response contained no output text")
         response_id = getattr(state.completed_response, "id", None)
