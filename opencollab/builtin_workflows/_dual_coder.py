@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from opencollab.patches import patch_paths
@@ -55,16 +56,13 @@ async def _coder_candidate(
         if isinstance(record, dict)
     ]
     observed_command = str(records[0].get("command") or "").strip() if records else shared_command
-    return CandidateRun(
-        label=raw.label,
+    return replace(
+        raw,
         output={
             "coder_output": raw.output,
             "public_command": observed_command,
             "public_test_records": records,
         },
-        diff=raw.diff,
-        test_records=raw.test_records,
-        verified_targets=raw.verified_targets,
     )
 
 

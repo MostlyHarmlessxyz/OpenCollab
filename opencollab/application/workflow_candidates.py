@@ -9,14 +9,41 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
-from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.async_timeout import CallerTimeoutError, await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
+from opencollab.application.workflow_budget import _BudgetLease
 
 
 def _candidate_budget_total(budget: int | None) -> int | None:
     if os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {"1", "true"}:
         return None
     return budget
+
+
+async def _wait_for_candidate_cleanup(lease: _BudgetLease) -> None:
+    """Drain this candidate's turn tasks and session-owned cleanup."""
+    current = asyncio.current_task()
+    saw_empty = False
+    while True:
+        owned = {
+            *(lease.pending_tasks or ()),
+            *(
+                task
+                for session in lease.sessions
+                for task in getattr(session, "pending_cleanup_tasks", ())
+                if isinstance(task, asyncio.Future)
+            ),
+        }
+        pending = {task for task in owned if not task.done() and task is not current}
+        if not pending:
+            if saw_empty:
+                return
+            saw_empty = True
+        else:
+            saw_empty = False
+            await asyncio.gather(*(asyncio.shield(task) for task in pending), return_exceptions=True)
+        # Finishing turn tasks and callbacks can register new session cleanup.
+        await asyncio.sleep(0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +268,7 @@ class WorkflowCandidatesMixin:
                     output = None
                     self._record_agent_failure(label, exc)
                     await self.log(f"candidate agent failed ({label}): {exc}")
-                await self.wait_for_pending_cleanup()
+                await _wait_for_candidate_cleanup(budget_lease)
                 try:
                     diff = await lease.diff()
                 except Exception as exc:
@@ -274,13 +301,14 @@ class WorkflowCandidatesMixin:
                 if token is not None:
                     self._active_budget_lease.reset(token)
                 if budget_lease is not None:
-                    pending = [
-                        task
-                        for task in budget_lease.pending_tasks or ()
-                        if not task.done()
-                    ]
-                    if pending:
-                        await asyncio.gather(*pending, return_exceptions=True)
+                    try:
+                        await await_owned_operation(
+                            _wait_for_candidate_cleanup(budget_lease),
+                            propagate_cancellation=True,
+                        )
+                    except asyncio.CancelledError as exc:
+                        if failure is None:
+                            failure = exc
                     self.budget.release(budget_lease)
             if failure is not None:
                 if not isinstance(failure, (CandidateCaptureError, CandidateWorkspaceTrackingError)):
