@@ -195,6 +195,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # Successful responses returned after caller cancellation or timeout.
         # They count against the budget but never enter a later turn's history.
         self._late_provider_usage: tuple[int, ...] = ()
+        # The session supplies its owned persistence queue after adopting this runner.
+        self.late_provider_usage_checkpoint: Callable[[], object] | None = None
 
     def reset_runtime_for_user_turn(self) -> None:
         """Restore agent capabilities narrowed by the previous turn."""
@@ -266,6 +268,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
             self._mark_budget_reserve_consumed(protected_call=protected_call)
+            if self.late_provider_usage_checkpoint is not None:
+                self.late_provider_usage_checkpoint()
         except BaseException:
             pass
         finally:

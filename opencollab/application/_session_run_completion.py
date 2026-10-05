@@ -674,6 +674,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self.state.set_context_tokens(input_tokens)
             if abandoned:
                 self._late_provider_usage += (total_tokens,)
+                if self.late_provider_usage_checkpoint is not None:
+                    self.late_provider_usage_checkpoint()
             self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
 
         async def complete_owned() -> CompletionResponse:
