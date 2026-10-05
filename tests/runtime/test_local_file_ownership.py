@@ -16,6 +16,7 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.tool_execution import ToolExecutionUseCase, ToolRuntime
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
+from tests.support.asyncio_test_support import assert_cancel_note
 
 
 async def test_cancelled_native_write_keeps_lock_until_atomic_write_finishes(tmp_path, monkeypatch):
@@ -136,7 +137,17 @@ async def test_cancelled_file_io_retains_underlying_failure(tmp_path, monkeypatc
 
     monkeypatch.setattr(local_module, "write_regular_bytes_atomic", failing_write)
     env = LocalEnvironment(str(tmp_path))
-    writer = asyncio.create_task(env.write_file("value.txt", "payload"))
+    failures = []
+
+    async def write():
+        try:
+            await env.write_file("value.txt", "payload")
+        except asyncio.CancelledError as exc:
+            # Python 3.10 replaces cancellation metadata at the Task boundary.
+            failures.append(exc)
+            raise
+
+    writer = asyncio.create_task(write())
     try:
         assert await asyncio.to_thread(started.wait, 2)
         writer.cancel()
@@ -145,7 +156,9 @@ async def test_cancelled_file_io_retains_underlying_failure(tmp_path, monkeypatc
         release.set()
         with pytest.raises(asyncio.CancelledError) as captured:
             await writer
-        assert any("controlled atomic write failed" in note for note in getattr(captured.value, "__notes__", ()))
+        assert_cancel_note(captured.value, "controlled atomic write failed")
+        assert len(failures) == 1
+        assert any("controlled atomic write failed" in note for note in getattr(failures[0], "__notes__", ()))
         assert not (tmp_path / "value.txt").exists()
     finally:
         release.set()
